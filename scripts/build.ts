@@ -54,6 +54,7 @@ await Bun.write(
 );
 await hashed({ entrypoints: [auto] }, "hl/");
 await $`rm -rf ${auto.replace(/\/auto\.js$/, "")}`;
+await hashed({ entrypoints: ["web/hl-worker.ts"] }, "");
 await hashed({ entrypoints: ["web/view.ts"] }, "");
 await hashed({ entrypoints: ["web/compose.ts"] }, "");
 
@@ -86,7 +87,7 @@ await Bun.write(`${out}/.assetsignore`, "assets.json\n");
 
 const files = (await $`cd ${out} && find . -type f | sort`.text()).trim().split("\n").map((f) => f.slice(2));
 const expected = [".assetsignore", "_headers", "assets.json", "bin.css", "cli", "favicon.ico", "favicon.svg", "install", "llms.txt", "robots.txt", "skill.md", ...Object.values(assets).map((a) => a.slice(1))];
-const wanted = ["view.js", "compose.js", "hl/core.js", "hl/auto.js", ...langs.map((l) => `hl/${l}.js`)];
+const wanted = ["view.js", "compose.js", "hl-worker.js", "hl/core.js", "hl/auto.js", ...langs.map((l) => `hl/${l}.js`)];
 const fonts = files.filter((f) => /^fonts\/geist(-mono)?(-ext)?\.[0-9a-f]{8}\.woff2$/.test(f));
 const unexpected = files.filter((f) => !expected.includes(f) && !fonts.includes(f));
 if (unexpected.length || expected.some((f) => !files.includes(f)) || fonts.length !== 4 || wanted.some((k) => !assets[k]) || Object.keys(assets).length !== wanted.length) {

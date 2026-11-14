@@ -1,4 +1,5 @@
-import { gutter, hlModules } from "../src/page";
+import { asset, gutter, hlModules } from "../src/page";
+import { highlight } from "./hl";
 import { decrypt } from "./crypto";
 import { plainLine, segments, splitLines } from "./text";
 import { toggleTheme } from "./theme";
@@ -16,18 +17,13 @@ type Data = {
   dl: string | null;
 };
 
-type Hljs = {
-  registerLanguage(name: string, lang: unknown): void;
-  highlight(code: string, opts: { language: string; ignoreIllegals: boolean }): { value: string };
-  highlightAuto(code: string): { value: string; relevance: number };
-};
-
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const data = JSON.parse($("data").textContent!) as Data;
 const pre = $<HTMLPreElement>("text");
 const BLOCK = 256;
 const CV_MIN = 1000;
 const HITS_MAX = 5000;
+const HL_INLINE = 50_000;
 
 let plain: string[] = [];
 let count = 0;
@@ -37,7 +33,6 @@ let anchor = 0;
 
 const esc = (s: string) => s.split("&").join("&amp;").split("<").join("&lt;");
 const line = (n: number) => pre.children[(n - 1) >> 8]?.children[(n - 1) & (BLOCK - 1)] as HTMLElement | undefined;
-const load = (path: string) => import(path);
 
 // ---------------------------------------------------------------- ANSI
 
@@ -128,42 +123,25 @@ function ansiLine(st: Style, text: string): string {
 
 // ---------------------------------------------------------------- highlight.js
 
-function splitHtml(htmlText: string): string[] {
-  const out: string[] = [];
-  const open: string[] = [];
-  let cur = "";
-  for (const m of htmlText.matchAll(/(<span[^>]*>)|(<\/span>)|(\n)|([^<\n]+)/g)) {
-    if (m[1]) {
-      open.push(m[1]);
-      cur += m[1];
-    } else if (m[2]) {
-      open.pop();
-      cur += m[2];
-    } else if (m[3]) {
-      out.push(cur + "</span>".repeat(open.length));
-      cur = open.join("");
-    } else cur += m[4];
-  }
-  out.push(cur);
-  return out;
-}
-
-async function highlighted(raw: string): Promise<string[] | null> {
-  const mods = data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
-  if (!mods) return null;
-  const text = plain.join("\n");
-  try {
-    const [core, grammar] = await Promise.all(mods.map(load));
-    const hljs = core.default as Hljs;
-    if (grammar) {
-      hljs.registerLanguage(data.lang, grammar.default);
-      return splitHtml(hljs.highlight(text, { language: data.lang, ignoreIllegals: true }).value);
+function highlighted(mods: string[], text: string): Promise<string[] | null> {
+  const inPage = () => highlight(mods, data.lang, text);
+  return new Promise((resolve) => {
+    let w: Worker;
+    try {
+      w = new Worker(asset("hl-worker.js"), { type: "module" });
+    } catch {
+      return resolve(inPage());
     }
-    const auto = hljs.highlightAuto(text);
-    return auto.relevance < 10 ? null : splitHtml(auto.value);
-  } catch {
-    return null;
-  }
+    w.onmessage = (e: MessageEvent<string[] | null>) => {
+      w.terminate();
+      resolve(e.data);
+    };
+    w.onerror = () => {
+      w.terminate();
+      resolve(inPage());
+    };
+    w.postMessage({ mods, lang: data.lang, text });
+  });
 }
 
 // ---------------------------------------------------------------- rows
@@ -193,11 +171,7 @@ function columns(s: string): number {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-async function render(raw: string) {
-  const lines = splitLines(raw);
-  const ansi = raw.includes("\x1b");
-  plain = lines.map(plainLine);
-  const hl = ansi ? null : await highlighted(raw);
+async function fill(lines: string[], ansi: boolean, hl: string[] | null) {
   const st = fresh();
   const out: string[] = [];
   let widest = 0;
@@ -220,9 +194,28 @@ async function render(raw: string) {
     pre.classList.add("cv");
   }
   pre.innerHTML = out.join("");
+}
+
+async function render(raw: string) {
+  const lines = splitLines(raw);
+  const ansi = raw.includes("\x1b");
+  plain = lines.map(plainLine);
   count = lines.length;
   eol = raw.endsWith("\n");
+  const mods = ansi ? null : data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
+  const text = mods ? plain.join("\n") : "";
+  if (mods && mods.length > 1 && text.length < HL_INLINE) {
+    await fill(lines, false, await highlight(mods, data.lang, text));
+    return fromHash();
+  }
+  const colored = mods ? highlighted(mods, text) : null;
+  await fill(lines, ansi, null);
   fromHash();
+  const hl = await colored;
+  if (!hl) return;
+  await fill(lines, false, hl);
+  if (sel) mark(sel[0], sel[1], "sel", true);
+  for (const n of hits.slice(0, HITS_MAX)) line(n)?.classList.add("hit");
 }
 
 // ---------------------------------------------------------------- selection
