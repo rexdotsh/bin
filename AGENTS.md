@@ -1,6 +1,6 @@
 # AGENTS.md
 
-bin: an agent-first pastebin at bin.rex.wf. One Cloudflare Worker, one R2 bucket (`bin-apac`, APAC location hint, R2 Local Uploads on; the old `bin` bucket in Western Europe is a stale backup), a zero-dependency CLI and a skill. Built like tack (`~/tack`), which serves HTML docs; bin only ever serves text.
+bin: an agent-first pastebin at bin.rex.wf. One Cloudflare Worker, one R2 bucket (`bin-apac`, APAC location hint, R2 Local Uploads on), a zero-dependency CLI and a skill. Built like tack (`~/tack`), which serves HTML docs; bin only ever serves text.
 
 ## Layout
 
