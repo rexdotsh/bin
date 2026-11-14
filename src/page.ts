@@ -77,6 +77,8 @@ function icons(raw: string | null, dl: string | null): string {
   ].join("");
 }
 
+const KEYS = [["y", "copy"], ["r", "raw"], ["/", "find"], ["g", "line"], ["w", "wrap"], ["e", "edit as new"], ["t", "theme"]];
+
 export function viewBody(v: View): { cls: string; html: string } {
   const { meta, id } = v;
   const enc = meta.enc === "1";
@@ -129,8 +131,8 @@ ${tabs}${locked ? `<form id="unlock" class="unlock"><p>This paste is encrypted. 
 <pre id="text" class="code" style="${style}"${locked ? " hidden" : ""}>
 ${body}</pre>
 </main>
-<footer class="foot"><div class="wrap"><span><kbd>y</kbd>copy</span><span><kbd>r</kbd>raw</span><span><kbd>/</kbd>find</span><span><kbd>g</kbd>line</span><span><kbd>w</kbd>wrap</span><span><kbd>e</kbd>edit as new</span><span><kbd>t</kbd>theme</span><span class="sp"></span><span>${esc(v.host)}</span></div></footer>
-<div id="find" class="find" hidden><input id="q" placeholder="find" autocomplete="off" aria-label="Find"><span id="count"></span></div>
+<footer class="foot"><div class="wrap">${KEYS.map(([k, label]) => `<button data-k="${k}"><kbd>${k}</kbd>${label}</button>`).join("")}<span class="sp"></span><span>${esc(v.host)}</span></div></footer>
+<div id="find" class="find" hidden><input id="q" placeholder="find" autocomplete="off" aria-label="Find"><span id="count"></span><button id="qx" class="ib" aria-label="Close">${svg('<path d="M6 6l12 12M18 6L6 18"/>')}</button></div>
 ${v.ansi !== undefined && !big ? `<template id="ansi">${escRaw(v.ansi)}</template>` : ""}<script type="application/json" id="data">${safeJson(data)}</script>`;
   const cls = ["view", v.wrap && "wrap-on", (locked || big) && "tall"].filter(Boolean).join(" ");
   return { cls, html };

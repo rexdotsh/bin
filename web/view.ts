@@ -375,6 +375,7 @@ function openBox(m: "find" | "line") {
   mode = m;
   q.value = "";
   q.placeholder = m === "find" ? "find" : "go to line";
+  q.enterKeyHint = m === "find" ? "next" : "go";
   $("count").textContent = "";
   findBox.hidden = false;
   q.focus();
@@ -440,6 +441,12 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   fn();
 });
+
+document.querySelector(".foot")!.addEventListener("click", (e) => {
+  const key = (e.target as HTMLElement).closest<HTMLElement>("[data-k]")?.dataset.k;
+  if (key) document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+});
+$("qx").addEventListener("click", closeBox);
 
 // ---------------------------------------------------------------- start
 
