@@ -1,3 +1,6 @@
+import CSS from "../dist/bin.css";
+import { esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
+
 interface Env {
   BUCKET: R2Bucket;
   ANON: RateLimit;
@@ -67,7 +70,7 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
   if (!parts.length) {
     if (m === "POST" || m === "PUT") return create(req, env, url);
     if (m !== "GET" && m !== "HEAD") return fail(405, "method not allowed");
-    if (wantsHtml(req)) return composePage(themeOf(req));
+    if (wantsHtml(req)) return composePage(req);
     const usage = await env.ASSETS.fetch(new Request(new URL("/llms.txt", url)));
     return new Response(usage.body, { headers: { "content-type": "text/plain; charset=utf-8" } });
   }
@@ -349,13 +352,19 @@ async function read(
     delete fileMeta.kind;
     if (mode !== "view") return rawResponse(part.body, fileMeta, id, mode);
     if (streamable(req, url, fileMeta)) return agentStream(part.body, fileMeta);
-    return present(req, url, id, ext, fileMeta, await part.text(), { files: index.files, file });
+    return present(req, url, id, ext, fileMeta, await viewText(req, url, fileMeta, part), { files: index.files, file });
   }
   if (file) return notFound(req);
 
   if (mode !== "view") return rawResponse(obj.body, meta, id, mode);
   if (streamable(req, url, meta)) return agentStream(obj.body, meta);
-  return present(req, url, id, ext, meta, await obj.text());
+  return present(req, url, id, ext, meta, await viewText(req, url, meta, obj));
+}
+
+async function viewText(req: Request, url: URL, meta: Meta, obj: R2ObjectBody): Promise<string> {
+  if (meta.enc === "1" || !(Number(meta.bytes) > INLINE_MAX) || slicing(url) || !wantsHtml(req)) return obj.text();
+  await obj.body.cancel();
+  return "";
 }
 
 function streamable(req: Request, url: URL, meta: Meta): boolean {
@@ -389,7 +398,7 @@ function present(
 ): Response {
   const q = url.searchParams;
   const sliced = slicing(url);
-  if (!sliced && wantsHtml(req)) return viewer(themeOf(req), url, id, ext, meta, body, extra);
+  if (!sliced && wantsHtml(req)) return viewer(req, url, id, ext, meta, body, extra);
   const headers = agentHeaders(meta);
   if (meta.enc === "1") {
     headers.set("x-bin-encrypted", "1");
@@ -865,7 +874,7 @@ function preview(body: string, meta: Meta): string {
 // ---------------------------------------------------------------- pages
 
 function viewer(
-  theme: string,
+  req: Request,
   url: URL,
   id: string,
   ext: string | undefined,
@@ -874,96 +883,80 @@ function viewer(
   extra: { files?: FileEntry[]; file?: string; diff?: string },
 ): Response {
   const enc = meta.enc === "1";
-  const plain = enc ? "" : stripAnsi(body);
-  const name = meta.name || "";
-  const heading = meta.t || name || "";
-  const facts: string[] = [];
-  if (meta.cmd) facts.push(`<span class="cmd">$ ${esc(meta.cmd)}</span>`);
-  if (meta.exit) facts.push(`<span class="${meta.exit === "0" ? "ok" : "bad"}">exit ${esc(meta.exit)}</span>`);
-  if (meta.dur) facts.push(`<span>${fmtDuration(Number(meta.dur))}</span>`);
-  if (meta.lang && meta.lang !== "text") facts.push(`<span>${esc(meta.lang)}</span>`);
-  if (!enc) facts.push(`<span id="nlines">${Number(meta.lines || 0).toLocaleString("en")} lines</span>`);
-  facts.push(`<span>${fmtSize(Number(meta.bytes || 0))}</span>`);
-  if (enc) facts.push(`<span class="lock">encrypted</span>`);
-  if (meta.exp) facts.push(`<span>expires ${new Date(Number(meta.exp) * 1000).toISOString().slice(0, 10)}</span>`);
-  const tabs = extra.files
-    ? `<nav class="tabs">${extra.files
-        .map((f) => `<a href="/${id}/${encodeURI(f.name)}"${f.name === extra.file ? ' aria-current="page"' : ""}>${esc(f.name)}</a>`)
-        .join("")}</nav>`
-    : "";
-  const filePath = extra.file ? `/${encodeURI(extra.file)}` : "";
-  const data = {
+  const inline = enc || Number(meta.bytes || body.length) <= INLINE_MAX;
+  const ansi = inline && !enc && (meta.ansi === "1" || (extra.file !== undefined && body.includes("\x1b")));
+  const hl = inline && !enc ? (ansi ? null : hlModules(meta.lang || "", body)) : undefined;
+  const heading = meta.t || meta.name || "";
+  const { cls, html } = viewBody({
     id,
     ext: ext ?? "",
-    name,
-    lang: meta.lang || "",
-    ansi: meta.ansi === "1" && !enc ? body : undefined,
+    host: url.host,
+    wrap: cookie(req, "wrap") === "1",
+    meta,
+    text: enc || !inline ? undefined : stripAnsi(body),
+    ansi: ansi ? body : undefined,
     enc: enc ? body : undefined,
-    diff: Boolean(extra.diff),
-    raw: extra.diff ? null : `/raw/${id}${filePath}`,
-    dl: extra.diff ? null : `/dl/${id}${filePath}`,
-  };
-  const title = `${heading || id} · bin`;
-  const desc = preview(body, meta);
-  const shown = extra.diff ? esc(extra.diff.replace("/vs/", " vs ")) : `<b>${esc(id)}</b>${ext ? `.${esc(ext)}` : ""}`;
-  const page = `<!doctype html>
-<html lang="en" data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)}</title>
+    files: extra.files,
+    file: extra.file,
+    diff: extra.diff,
+    hl,
+  });
+  const desc = inline ? preview(body, meta) : `${Number(meta.lines || 0).toLocaleString("en")} lines`;
+  const raw = extra.diff ? "" : `/raw/${id}${extra.file ? `/${segments(extra.file)}` : ""}`;
+  const og = `${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
 <meta property="og:title" content="${esc(heading || id)}"><meta property="og:description" content="${esc(desc)}">
-<meta property="og:site_name" content="bin"><meta property="og:type" content="article"><meta name="twitter:card" content="summary">
-<meta name="theme-color" content="${theme === "light" ? "#fcfcfb" : "#0a0a0a"}">
-${data.raw ? `<link rel="alternate" type="text/plain" href="${data.raw}">` : ""}
-<link rel="icon" href="/favicon.svg"><link rel="preload" href="/fonts/GeistMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/bin.css"></head>
-<body class="view">
-<header class="top wrap"><a class="mark" href="/">bin</a><span class="crumb">/ ${shown}<span id="hash"></span></span><span class="sp"></span>
-<nav class="acts">${icons(data.raw, data.dl)}</nav></header>
-<main class="wrap">
-${heading ? `<h1>${esc(heading)}</h1>` : ""}<div class="meta">${facts.join("")}</div>
-${tabs}${enc ? `<form id="unlock" class="unlock"><p>This paste is encrypted. The password never leaves your browser.</p><div><input type="password" id="pw" placeholder="password" autocomplete="off" autofocus><button>unlock</button></div><p id="pwerr" class="bad" hidden>wrong password</p></form>` : ""}
-<pre id="text">${esc(plain)}</pre><div id="code" class="code" hidden></div>
-</main>
-<footer class="foot"><div class="wrap"><span><kbd>y</kbd>copy</span><span><kbd>r</kbd>raw</span><span><kbd>/</kbd>find</span><span><kbd>g</kbd>line</span><span><kbd>w</kbd>wrap</span><span><kbd>e</kbd>edit as new</span><span><kbd>t</kbd>theme</span><span class="sp"></span><span>${esc(url.host)}</span></div></footer>
-<div id="find" class="find" hidden><input id="q" placeholder="find" autocomplete="off"><span id="count"></span></div>
-<script type="application/json" id="data">${safeJson(data)}</script>
-<script type="module" src="/view.js"></script>
-</body></html>`;
-  return html(page);
-}
-
-function icons(raw: string | null, dl: string | null): string {
-  const svg = (d: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
-  return [
-    `<button id="copy" class="ib" title="Copy (y)">${svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>')}</button>`,
-    raw ? `<a class="ib" href="${raw}" title="Raw (r)">${svg('<path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>')}</a>` : "",
-    dl ? `<a class="ib" href="${dl}" title="Download (d)">${svg('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>')}</a>` : "",
-    `<button id="del" class="ib" title="Delete" hidden>${svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>')}</button>`,
-    `<a class="ib" href="/" title="New paste">${svg('<path d="M12 5v14M5 12h14"/>')}</a>`,
-    THEME_BUTTON,
-  ].join("");
-}
-
-function composePage(theme: string): Response {
-  const options = (name: string, items: [string, string][], selected: string) =>
-    `<select id="${name}">${items.map(([v, l]) => `<option value="${v}"${v === selected ? " selected" : ""}>${l}</option>`).join("")}</select>`;
-  const langs = [["auto", "auto"], ...[...LANGS].sort().map((l) => [l, l])] as [string, string][];
-  return html(`<!doctype html>
-<html lang="en" data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>bin</title><meta name="description" content="Paste text, get a link.">
-<meta name="theme-color" content="${theme === "light" ? "#fcfcfb" : "#0a0a0a"}">
-<link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/bin.css"></head>
-<body class="compose">
-<header class="top wrap"><a class="mark" href="/">bin</a><span class="sp"></span><span class="hint">ctrl+v saves instantly · ctrl+shift+v to edit first</span>${THEME_BUTTON}</header>
-<main class="wrap"><textarea id="t" spellcheck="false" autofocus placeholder="Paste something…"></textarea></main>
-<footer class="bar wrap">
-<input id="title" placeholder="Title" maxlength="200" autocomplete="off">
-<label>Language ${options("lang", langs, "auto")}</label>
-<label>Expires ${options("ttl", [["never", "never"], ["1h", "1 hour"], ["1d", "1 day"], ["7d", "7 days"], ["30d", "30 days"]], "never")}</label>
-<label class="pwl"><input type="checkbox" id="lock"> Password</label><input id="pw" type="password" placeholder="password" hidden autocomplete="new-password">
-<span class="sp"></span><span id="status"></span><button id="save" class="save">Save <span>ctrl+s</span></button>
-</footer>
-<script type="module" src="/compose.js"></script>
+<meta property="og:site_name" content="bin"><meta property="og:type" content="article"><meta name="twitter:card" content="summary">${raw ? `<link rel="alternate" type="text/plain" href="${raw}">` : ""}`;
+  return page(req, `${head(req, `${heading || id} · bin`, og, "/view.js")}
+<body class="${cls}">
+${html}
 </body></html>`);
+}
+
+function composePage(req: Request): Response {
+  const mac = /Macintosh|iPhone|iPad/.test(req.headers.get("user-agent") ?? "");
+  const mod = mac ? "⌘" : "Ctrl+";
+  const options = (name: string, label: string, items: [string, string][], selected: string) =>
+    `<span class="lbl">${label}</span><select id="${name}" aria-label="${label}">${items.map(([v, l]) => `<option value="${v}"${v === selected ? " selected" : ""}>${l}</option>`).join("")}</select>`;
+  const langs = [["auto", "auto"], ...[...LANGS].sort().map((l) => [l, l])] as [string, string][];
+  const secrets = SECRETS.map(([re, kind]) => [re.source, kind]);
+  return page(req, `${head(req, "bin", `<meta name="description" content="Paste text, get a link.">`, "/compose.js")}
+<body class="compose">
+<header class="top wrap"><a class="mark" href="/">bin</a><span class="sp"></span>${THEME_BUTTON}</header>
+<main class="wrap"><textarea id="t" spellcheck="false" autofocus aria-label="Paste" placeholder="Paste to save instantly&#10;${mac ? "⇧⌘V" : "Ctrl+Shift+V"} to edit first"></textarea></main>
+<footer class="bar wrap">
+<input id="title" class="field" placeholder="Title" maxlength="200" autocomplete="off" aria-label="Title">
+${options("lang", "Language", langs, "auto")}
+${options("ttl", "Expires", [["never", "never"], ["1h", "in 1 hour"], ["1d", "in 1 day"], ["7d", "in 7 days"], ["30d", "in 30 days"]], "never")}
+<span class="pw"><button type="button" id="lock" class="lockbtn" aria-pressed="false" title="Encrypt with a password">${LOCK_ICON}<span>Password</span></button><input id="pw" type="password" placeholder="password" autocomplete="new-password" aria-label="Password" hidden></span>
+<span class="sp"></span><span id="status" role="status"></span><button id="save" class="btn">Save <kbd>${mod}S</kbd></button>
+</footer>
+<script type="application/json" id="data">${safeJson({ mod, secrets })}</script>
+</body></html>`);
+}
+
+const FONTS = [...CSS.matchAll(/url\("?(\/fonts\/[^)"]+)"?\)/g)].map((m) => m[1]).filter((f) => !f.includes("-ext."));
+
+function head(req: Request, title: string, extra: string, script?: string): string {
+  const theme = themeOf(req);
+  const fonts = script ? FONTS : FONTS.filter((f) => !f.includes("mono"));
+  return `<!doctype html>
+<html lang="en" data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title>${extra}
+<meta name="theme-color" content="${theme === "light" ? "#fcfcfb" : "#0a0a0a"}"><link rel="icon" href="/favicon.svg">
+${fonts.map((f) => `<link rel="preload" href="${f}" as="font" type="font/woff2" crossorigin>`).join("")}${script ? `<script type="module" src="${script}"></script>` : ""}
+<style>${CSS}</style></head>`;
+}
+
+function page(req: Request, body: string, status = 200): Response {
+  const headers = new Headers({ "content-type": "text/html; charset=utf-8", vary: "accept-encoding" });
+  const accept = req.headers.get("accept-encoding") ?? "";
+  if (/\bbr\b/.test(accept)) headers.set("content-encoding", "br");
+  else if (/\bgzip\b/.test(accept)) headers.set("content-encoding", "gzip");
+  return new Response(body, { status, headers });
+}
+
+function cookie(req: Request, name: string): string | undefined {
+  return req.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`))?.[1];
 }
 
 // ---------------------------------------------------------------- helpers
@@ -974,7 +967,6 @@ async function isOwner(req: Request, env: Env): Promise<boolean> {
   return same(given, env.BIN_TOKEN);
 }
 
-const THEME_BUTTON = `<button id="theme" class="ib" title="Light or dark (t)"><svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg><svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>`;
 
 function themeOf(req: Request): "light" | "dark" {
   return /(?:^|;\s*)theme=light(?:;|$)/.test(req.headers.get("cookie") ?? "") ? "light" : "dark";
@@ -1047,30 +1039,11 @@ function cleanName(raw: string): string {
 
 const encodePath = (name: string) => name.split("/").map(encodeURIComponent).join("/");
 
-function safeJson(v: unknown): string {
-  return JSON.stringify(v).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-}
-
-function esc(s: string): string {
-  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
-}
-
-function fmtSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1048576) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
-  return `${(n / 1048576).toFixed(1)} MB`;
-}
-
-function fmtDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
-}
-
 function notFound(req: Request): Response {
   if (!wantsHtml(req)) return text("not found\n", 404);
-  return html(
-    `<!doctype html><html lang="en" data-theme="${themeOf(req)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Not found · bin</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/bin.css"></head><body class="view"><header class="top wrap"><a class="mark" href="/">bin</a></header><main class="wrap"><h1>Not found</h1><p class="muted">This paste doesn't exist, expired, or was deleted.</p></main></body></html>`,
+  return page(
+    req,
+    `${head(req, "Not found · bin", "")}<body class="view"><header class="top wrap"><a class="mark" href="/">bin</a></header><main class="wrap"><h1>Not found</h1><p class="muted">This paste doesn't exist, expired, or was deleted.</p></main></body></html>`,
     404,
   );
 }
@@ -1083,4 +1056,3 @@ const text = (body: string, status = 200, headers?: Headers) => {
   h.set("content-type", "text/plain; charset=utf-8");
   return new Response(body, { status, headers: h });
 };
-const html = (body: string, status = 200) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });

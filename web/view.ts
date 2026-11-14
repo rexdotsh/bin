@@ -1,4 +1,6 @@
+import { gutter, hlModules } from "../src/page";
 import { decrypt } from "./crypto";
+import { plainLine, segments, splitLines } from "./text";
 import { toggleTheme } from "./theme";
 
 type Data = {
@@ -6,44 +8,36 @@ type Data = {
   ext: string;
   name: string;
   lang: string;
-  ansi?: string;
   enc?: string;
-  live?: number;
+  src?: string;
   diff: boolean;
+  hl?: string[] | null;
   raw: string | null;
   dl: string | null;
 };
 
 type Hljs = {
-  getLanguage(name: string): unknown;
+  registerLanguage(name: string, lang: unknown): void;
   highlight(code: string, opts: { language: string; ignoreIllegals: boolean }): { value: string };
-  highlightAuto(code: string): { value: string; relevance: number; language?: string };
+  highlightAuto(code: string): { value: string; relevance: number };
 };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const data = JSON.parse($("data").textContent!) as Data;
 const pre = $<HTMLPreElement>("text");
-const code = $<HTMLDivElement>("code");
-const NO_HL = new Set(["", "log", "text", "diff"]);
-const HL_MAX = 300_000;
-const BATCH = 3000;
+const BLOCK = 256;
+const CV_MIN = 1000;
+const HITS_MAX = 5000;
 
 let plain: string[] = [];
+let count = 0;
+let eol = true;
 let sel: [number, number] | null = null;
 let anchor = 0;
-let rows: HTMLDivElement[] = [];
 
-const esc = (s: string) => s.replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
-const strip = (s: string) =>
-  s
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[@-Z\\-_]/g, "");
-const lastSegment = (line: string) => {
-  const parts = line.split("\r");
-  while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
-  return parts;
-};
+const esc = (s: string) => s.split("&").join("&amp;").split("<").join("&lt;");
+const line = (n: number) => pre.children[(n - 1) >> 8]?.children[(n - 1) & (BLOCK - 1)] as HTMLElement | undefined;
+const load = (path: string) => import(path);
 
 // ---------------------------------------------------------------- ANSI
 
@@ -60,10 +54,18 @@ function xterm(n: number): string {
 type Style = { fg: number | string | null; bg: number | string | null; b: boolean; d: boolean; i: boolean; u: boolean };
 const fresh = (): Style => ({ fg: null, bg: null, b: false, d: false, i: false, u: false });
 
+function extended(n: number[]): number | string | null {
+  const c = (v: number | undefined) => Math.min(255, Math.max(0, v ?? 0));
+  if (n[0] === 5) return n[1] === undefined ? null : c(n[1]) < 16 ? c(n[1]) : xterm(c(n[1]));
+  if (n[0] === 2) return `rgb(${c(n[1])},${c(n[2])},${c(n[3])})`;
+  return null;
+}
+
 function sgr(st: Style, params: string) {
-  const p = params === "" ? [0] : params.split(/[;:]/).map((x) => Number(x) || 0);
-  for (let k = 0; k < p.length; k++) {
-    const n = p[k];
+  const groups = params.split(";");
+  for (let k = 0; k < groups.length; k++) {
+    const sub = groups[k].split(":").map((x) => Number(x) || 0);
+    const n = sub[0];
     if (n === 0) Object.assign(st, fresh());
     else if (n === 1) st.b = true;
     else if (n === 2) st.d = true;
@@ -79,14 +81,12 @@ function sgr(st: Style, params: string) {
     else if (n >= 100 && n <= 107) st.bg = n - 92;
     else if (n === 49) st.bg = null;
     else if (n === 38 || n === 48) {
-      let v: number | string | null = null;
-      if (p[k + 1] === 5) {
-        const c = p[k + 2];
-        v = c < 16 ? c : xterm(c);
-        k += 2;
-      } else if (p[k + 1] === 2) {
-        v = `rgb(${p[k + 2]},${p[k + 3]},${p[k + 4]})`;
-        k += 4;
+      let v: number | string | null;
+      if (sub.length > 1) v = extended(sub[1] === 2 && sub.length > 5 ? [2, ...sub.slice(3)] : sub.slice(1));
+      else {
+        const rest = groups.slice(k + 1, k + 5).map((x) => Number(x) || 0);
+        v = extended(rest);
+        k += rest[0] === 5 ? 2 : rest[0] === 2 ? 4 : 0;
       }
       if (n === 38) st.fg = v;
       else st.bg = v;
@@ -112,8 +112,8 @@ function span(st: Style, s: string): string {
 
 const TOKEN = /\x1b\[([0-9;:?]*)([ -/]*[@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]?|([^\x1b]+)/g;
 
-function ansiLine(st: Style, line: string): string {
-  const parts = lastSegment(line);
+function ansiLine(st: Style, text: string): string {
+  const parts = segments(text);
   let out = "";
   parts.forEach((seg, idx) => {
     const keep = idx === parts.length - 1;
@@ -131,38 +131,36 @@ function ansiLine(st: Style, line: string): string {
 function splitHtml(htmlText: string): string[] {
   const out: string[] = [];
   const open: string[] = [];
-  let line = "";
+  let cur = "";
   for (const m of htmlText.matchAll(/(<span[^>]*>)|(<\/span>)|(\n)|([^<\n]+)/g)) {
     if (m[1]) {
       open.push(m[1]);
-      line += m[1];
+      cur += m[1];
     } else if (m[2]) {
       open.pop();
-      line += m[2];
+      cur += m[2];
     } else if (m[3]) {
-      out.push(line + "</span>".repeat(open.length));
-      line = open.join("");
-    } else line += m[4];
+      out.push(cur + "</span>".repeat(open.length));
+      cur = open.join("");
+    } else cur += m[4];
   }
-  out.push(line);
+  out.push(cur);
   return out;
 }
 
-async function highlighted(text: string): Promise<string[] | null> {
-  if (data.ansi || data.live !== undefined || text.length > HL_MAX) return null;
-  const lang = data.lang;
-  if (NO_HL.has(lang) && !(lang === "" && text.length < 30_000)) return null;
+async function highlighted(raw: string): Promise<string[] | null> {
+  const mods = data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
+  if (!mods) return null;
+  const text = plain.join("\n");
   try {
-    const path = "/hl.js";
-    const hljs = ((await import(path)) as { default: Hljs }).default;
-    let value: string;
-    if (lang && hljs.getLanguage(lang)) value = hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
-    else {
-      const auto = hljs.highlightAuto(text);
-      if (auto.relevance < 10) return null;
-      value = auto.value;
+    const [core, grammar] = await Promise.all(mods.map(load));
+    const hljs = core.default as Hljs;
+    if (grammar) {
+      hljs.registerLanguage(data.lang, grammar.default);
+      return splitHtml(hljs.highlight(text, { language: data.lang, ignoreIllegals: true }).value);
     }
-    return splitHtml(value);
+    const auto = hljs.highlightAuto(text);
+    return auto.relevance < 10 ? null : splitHtml(auto.value);
   } catch {
     return null;
   }
@@ -171,137 +169,94 @@ async function highlighted(text: string): Promise<string[] | null> {
 // ---------------------------------------------------------------- rows
 
 function rowClass(stripped: string): string {
-  if (!(data.lang === "diff" || data.diff)) return "r";
-  if (stripped.startsWith("+++") || stripped.startsWith("---") || /^(diff|index) /.test(stripped)) return "r dm";
-  if (stripped.startsWith("@@")) return "r dh";
-  if (stripped.startsWith("+")) return "r da";
-  if (stripped.startsWith("-")) return "r dd";
-  return "r";
+  if (!(data.lang === "diff" || data.diff)) return "l";
+  if (stripped.startsWith("+++") || stripped.startsWith("---") || /^(diff|index) /.test(stripped)) return "l dm";
+  if (stripped.startsWith("@@")) return "l dh";
+  if (stripped.startsWith("+")) return "l da";
+  if (stripped.startsWith("-")) return "l dd";
+  return "l";
 }
 
-function makeRow(n: number, inner: string, stripped: string): HTMLDivElement {
-  const r = document.createElement("div");
-  r.className = rowClass(stripped);
-  r.id = `L${n}`;
-  r.innerHTML = `<a class="n" href="#L${n}">${n}</a><span class="c">${inner}</span>`;
-  return r;
+const row = (stripped: string, inner: string) => `<span class="${rowClass(stripped)}">${inner}</span>`;
+const block = (start: number, rows: string, size: number) =>
+  `<div class="b" style="counter-reset:n ${start}${size < BLOCK ? `;contain-intrinsic-block-size:auto ${size * 24}px` : ""}">${rows}</div>`;
+
+function columns(s: string): number {
+  if (!/[\t\u1100-\uffff]/.test(s)) return s.length;
+  let c = 0;
+  for (const ch of s) {
+    if (ch === "\t") c += 8 - (c % 8);
+    else c += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]|[\ud800-\udbff]/.test(ch) ? 2 : 1;
+  }
+  return c;
 }
 
-const style = fresh();
-let pending = "";
-let pendingRow: HTMLDivElement | null = null;
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function appendText(chunk: string) {
-  const all = pending + chunk;
-  const parts = all.replace(/\r\n/g, "\n").split("\n");
-  pending = parts.pop()!;
-  if (pendingRow) {
-    pendingRow.remove();
-    rows.pop();
-    plain.pop();
-    pendingRow = null;
+async function render(raw: string) {
+  const lines = splitLines(raw);
+  const ansi = raw.includes("\x1b");
+  plain = lines.map(plainLine);
+  const hl = ansi ? null : await highlighted(raw);
+  const st = fresh();
+  const out: string[] = [];
+  let widest = 0;
+  let t = performance.now();
+  for (let i = 0; i < lines.length; i += BLOCK) {
+    const end = Math.min(lines.length, i + BLOCK);
+    let rows = "";
+    for (let k = i; k < end; k++) {
+      rows += row(plain[k], ansi ? ansiLine(st, lines[k]) : hl ? (hl[k] ?? esc(plain[k])) : esc(plain[k]));
+      widest = Math.max(widest, columns(plain[k]));
+    }
+    out.push(block(i, rows, end - i));
+    if (performance.now() - t > 30) {
+      await tick();
+      t = performance.now();
+    }
   }
-  const frag = document.createDocumentFragment();
-  for (const line of parts) {
-    const s = strip(lastSegment(line).pop() ?? "");
-    plain.push(s);
-    const r = makeRow(plain.length, ansiLine(style, line), s);
-    rows.push(r);
-    frag.append(r);
+  if (lines.length > CV_MIN) {
+    pre.style.setProperty("--cw", `${widest}ch`);
+    pre.classList.add("cv");
   }
-  if (pending) {
-    const copy = { ...style };
-    const s = strip(lastSegment(pending).pop() ?? "");
-    plain.push(s);
-    pendingRow = makeRow(plain.length, ansiLine(copy, pending), s);
-    rows.push(pendingRow);
-    frag.append(pendingRow);
-  }
-  code.append(frag);
-  gutter();
-}
-
-async function render(text: string) {
-  const norm = text.replace(/\r\n/g, "\n");
-  const hl = await highlighted(norm);
-  code.textContent = "";
-  rows = [];
-  plain = [];
-  if (!hl) {
-    const lines = norm.split("\n");
-    if (norm.endsWith("\n")) lines.pop();
-    const st = fresh();
-    let i = 0;
-    const step = () => {
-      const frag = document.createDocumentFragment();
-      for (const end = Math.min(lines.length, i + BATCH); i < end; i++) {
-        const s = strip(lastSegment(lines[i]).pop() ?? "");
-        plain.push(s);
-        const r = makeRow(i + 1, ansiLine(st, lines[i]), s);
-        rows.push(r);
-        frag.append(r);
-      }
-      code.append(frag);
-      if (i < lines.length) setTimeout(step, 0);
-      else done();
-    };
-    show();
-    step();
-    return;
-  }
-  const lines = norm.split("\n");
-  if (norm.endsWith("\n")) {
-    lines.pop();
-    hl.pop();
-  }
-  const frag = document.createDocumentFragment();
-  lines.forEach((l, i) => {
-    plain.push(l);
-    const r = makeRow(i + 1, hl[i] ?? esc(l), l);
-    rows.push(r);
-    frag.append(r);
-  });
-  code.append(frag);
-  show();
-  done();
-}
-
-function show() {
-  pre.hidden = true;
-  code.hidden = false;
-  gutter();
-}
-
-function gutter() {
-  code.style.setProperty("--gw", `${String(Math.max(rows.length, 1)).length + 1}ch`);
-}
-
-function done() {
-  const m = location.hash.match(/^#L(\d+)(?:-L?(\d+))?$/);
-  if (m) {
-    select(Number(m[1]), Number(m[2] ?? m[1]));
-    rows[sel![0] - 1]?.scrollIntoView({ block: "center" });
-  }
+  pre.innerHTML = out.join("");
+  count = lines.length;
+  eol = raw.endsWith("\n");
+  fromHash();
 }
 
 // ---------------------------------------------------------------- selection
 
+function mark(a: number, b: number, cls: string, on: boolean) {
+  for (let i = a; i <= b; i++) line(i)?.classList.toggle(cls, on);
+}
+
 function select(a: number, b: number) {
   const lo = Math.max(1, Math.min(a, b));
-  const hi = Math.min(rows.length, Math.max(a, b));
-  if (sel) for (let i = sel[0]; i <= sel[1]; i++) rows[i - 1]?.classList.remove("sel");
+  const hi = Math.min(count, Math.max(a, b));
+  if (sel) mark(sel[0], sel[1], "sel", false);
   sel = lo <= hi ? [lo, hi] : null;
-  if (sel) for (let i = sel[0]; i <= sel[1]; i++) rows[i - 1]?.classList.add("sel");
+  if (sel) mark(sel[0], sel[1], "sel", true);
   const hash = sel ? (sel[0] === sel[1] ? `#L${sel[0]}` : `#L${sel[0]}-L${sel[1]}`) : "";
-  history.replaceState(null, "", hash || location.pathname + location.search);
+  history.replaceState(history.state, "", hash || location.pathname + location.search);
   $("hash").textContent = hash;
 }
 
-code.addEventListener("click", (e) => {
-  const a = (e.target as HTMLElement).closest("a.n");
-  if (!a) return;
-  e.preventDefault();
-  const n = Number(a.textContent);
+function fromHash() {
+  const m = location.hash.match(/^#L(\d+)(?:-L?(\d+))?$/);
+  if (!m) return;
+  anchor = Number(m[1]);
+  select(anchor, Number(m[2] ?? m[1]));
+  if (sel) line(sel[0])?.scrollIntoView({ block: "center" });
+}
+
+addEventListener("hashchange", fromHash);
+
+pre.addEventListener("click", (e) => {
+  const l = (e.target as HTMLElement).closest<HTMLElement>(".l");
+  if (!l || e.clientX - l.getBoundingClientRect().left > parseFloat(getComputedStyle(l).paddingLeft)) return;
+  const b = l.parentElement!;
+  const n = Array.prototype.indexOf.call(pre.children, b) * BLOCK + Array.prototype.indexOf.call(b.children, l) + 1;
   if (e.shiftKey && anchor) select(anchor, n);
   else if (sel && sel[0] === n && sel[1] === n) {
     select(0, -1);
@@ -319,6 +274,7 @@ function toast(msg: string) {
   if (!t) {
     t = document.createElement("div");
     t.className = "toast";
+    t.setAttribute("role", "status");
     document.body.append(t);
   }
   t.textContent = msg;
@@ -327,11 +283,11 @@ function toast(msg: string) {
   t.dataset.timer = String(setTimeout(() => t!.classList.remove("on"), 1400));
 }
 
+const textOf = (a: number, b: number) => plain.slice(a - 1, b).join("\n") + (b >= a && (b < count || eol) ? "\n" : "");
+
 async function copy() {
-  const lines = sel ? plain.slice(sel[0] - 1, sel[1]) : plain;
-  const text = lines.join("\n") + (lines.length ? "\n" : "");
   try {
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(sel ? textOf(sel[0], sel[1]) : textOf(1, count));
     toast(sel ? `copied lines ${sel[0]}–${sel[1]}` : "copied");
   } catch {
     toast("couldn't copy");
@@ -355,13 +311,18 @@ if (delToken && !data.diff) {
   });
 }
 
-if (localStorage.getItem("bin:wrap") === "1") document.body.classList.add("wrap-on");
-
 const findBox = $<HTMLDivElement>("find");
 const q = $<HTMLInputElement>("q");
 let mode: "find" | "line" = "find";
 let hits: number[] = [];
 let hitAt = -1;
+let findTimer = 0;
+
+function clearHits() {
+  for (const n of hits.slice(0, HITS_MAX)) line(n)?.classList.remove("hit");
+  hits = [];
+  hitAt = -1;
+}
 
 function openBox(m: "find" | "line") {
   mode = m;
@@ -374,19 +335,20 @@ function openBox(m: "find" | "line") {
 
 function closeBox() {
   findBox.hidden = true;
-  for (const n of hits) rows[n - 1]?.classList.remove("hit");
-  hits = [];
+  clearTimeout(findTimer);
+  clearHits();
 }
 
 q.addEventListener("input", () => {
   if (mode !== "find") return;
-  for (const n of hits) rows[n - 1]?.classList.remove("hit");
-  hits = [];
-  hitAt = -1;
-  const needle = q.value.toLowerCase();
-  if (needle) plain.forEach((l, i) => l.toLowerCase().includes(needle) && hits.push(i + 1));
-  for (const n of hits) rows[n - 1]?.classList.add("hit");
-  $("count").textContent = needle ? `${hits.length}` : "";
+  clearTimeout(findTimer);
+  findTimer = setTimeout(() => {
+    clearHits();
+    const needle = q.value.toLowerCase();
+    if (needle) plain.forEach((l, i) => l.toLowerCase().includes(needle) && hits.push(i + 1));
+    for (const n of hits.slice(0, HITS_MAX)) line(n)?.classList.add("hit");
+    $("count").textContent = needle ? `${hits.length}` : "";
+  }, 150);
 });
 
 q.addEventListener("keydown", (e) => {
@@ -395,38 +357,42 @@ q.addEventListener("keydown", (e) => {
   e.preventDefault();
   if (mode === "line") {
     const n = Number(q.value);
-    if (n >= 1 && n <= rows.length) {
+    if (n >= 1 && n <= count) {
       anchor = n;
       select(n, n);
-      rows[n - 1].scrollIntoView({ block: "center" });
+      line(n)?.scrollIntoView({ block: "center" });
     }
     return closeBox();
   }
   if (!hits.length) return;
   hitAt = (hitAt + (e.shiftKey ? -1 : 1) + hits.length) % hits.length;
-  rows[hits[hitAt] - 1].scrollIntoView({ block: "center" });
+  line(hits[hitAt])?.scrollIntoView({ block: "center" });
   $("count").textContent = `${hitAt + 1}/${hits.length}`;
 });
 
+function setCookie(name: string, value: string) {
+  document.cookie = `${name}=${value}; Path=/; Max-Age=31536000; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
+}
+
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const t = e.target as HTMLElement;
-  if (t.closest("input, textarea, select")) return;
+  if ((e.target as HTMLElement).closest("input, textarea, select")) return;
   const go = (href: string | null) => href && (location.href = href);
   const actions: Record<string, () => unknown> = {
     y: copy,
     r: () => go(data.raw),
     d: () => go(data.dl),
-    w: () => {
-      const on = document.body.classList.toggle("wrap-on");
-      localStorage.setItem("bin:wrap", on ? "1" : "0");
-    },
+    w: () => setCookie("wrap", document.body.classList.toggle("wrap-on") ? "1" : "0"),
     t: toggleTheme,
     "/": () => openBox("find"),
     g: () => openBox("line"),
     e: () => {
-      sessionStorage.setItem("bin:draft", JSON.stringify({ text: plain.join("\n") + (plain.length ? "\n" : ""), name: data.name, lang: data.lang }));
-      location.href = "/";
+      try {
+        sessionStorage.setItem("bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }));
+        location.href = "/";
+      } catch {
+        toast("too big to edit here");
+      }
     },
     Escape: () => (findBox.hidden ? select(0, -1) : closeBox()),
   };
@@ -438,54 +404,28 @@ document.addEventListener("keydown", (e) => {
 
 // ---------------------------------------------------------------- start
 
-function startLive(from: number) {
-  let tries = 0;
-  const connect = () => {
-    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/${data.id}/_live?from=${from}`);
-    ws.onopen = () => (tries = 0);
-    ws.onmessage = (m) => {
-      const msg = JSON.parse(m.data as string) as { append?: string; n?: number; sealed?: boolean; gone?: boolean };
-      if (msg.sealed) return location.reload();
-      if (msg.gone) return (document.body.dataset.gone = "1");
-      if (msg.append === undefined) return;
-      const stick = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 40;
-      appendText(msg.append);
-      from = msg.n ?? from;
-      const n = document.getElementById("nlines");
-      if (n) n.textContent = `${plain.length.toLocaleString("en")} lines`;
-      if (stick) window.scrollTo(0, document.documentElement.scrollHeight);
-    };
-    ws.onclose = () => {
-      if (document.body.dataset.gone) return;
-      if (++tries > 5) return location.reload();
-      setTimeout(connect, 1000 * tries);
-    };
-  };
-  connect();
-}
-
 if (data.enc) {
   const form = $<HTMLFormElement>("unlock");
-  pre.hidden = true;
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const pw = $<HTMLInputElement>("pw");
     try {
       const text = await decrypt(data.enc!, pw.value);
+      const n = splitLines(text).length;
       form.remove();
-      const n = text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
-      const meta = document.querySelector(".meta");
-      meta?.insertAdjacentHTML("afterbegin", `<span>${n.toLocaleString("en")} lines</span>`);
+      document.querySelector(".meta")!.insertAdjacentHTML("beforeend", `<span>${n.toLocaleString("en")} lines</span>`);
+      pre.style.setProperty("--gw", gutter(n));
+      pre.textContent = splitLines(text).map(plainLine).join("\n");
+      pre.hidden = false;
       await render(text);
     } catch {
       $("pwerr").hidden = false;
       pw.select();
     }
   });
-} else if (data.live !== undefined) {
-  show();
-  appendText(data.ansi ?? pre.textContent ?? "");
-  startLive(data.live);
 } else {
-  render(data.ansi ?? pre.textContent ?? "");
+  const source = data.src
+    ? fetch(data.src).then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+    : Promise.resolve(document.querySelector<HTMLTemplateElement>("#ansi")?.content.textContent ?? pre.textContent ?? "");
+  source.then(render, () => toast("couldn't load this paste"));
 }

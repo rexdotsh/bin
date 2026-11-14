@@ -9,6 +9,7 @@
   "routes": [{ "pattern": "bin.rex.wf", "custom_domain": true }],
 
   "build": { "command": "bun run build" },
+  "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "assets": { "directory": "./dist", "binding": "ASSETS" },
 
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "bin" }],
