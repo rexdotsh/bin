@@ -6,7 +6,7 @@
 
   "workers_dev": false,
   "preview_urls": false,
-  "routes": [{ "pattern": "next.bin.rex.wf", "custom_domain": true }],
+  "routes": [{ "pattern": "bin.rex.wf", "custom_domain": true }],
 
   "build": { "command": "bun run build" },
   "assets": { "directory": "./dist", "binding": "ASSETS" },
