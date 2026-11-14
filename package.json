@@ -1,0 +1,23 @@
+{
+  "name": "bin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "bin": "cli/bin.ts"
+  },
+  "scripts": {
+    "dev": "bun -e 'const c = Bun.JSONC.parse(await Bun.file(\"wrangler.jsonc\").text()); delete c.routes; await Bun.write(\"wrangler.dev.json\", JSON.stringify(c))' && wrangler dev -c wrangler.dev.json",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types --include-env=false",
+    "check": "bun run types >/dev/null && tsc --noEmit && tsc --noEmit -p cli && tsc --noEmit -p web",
+    "build": "rm -rf dist && mkdir -p dist/fonts && bun build cli/bin.ts --target=node --outfile=dist/cli && bun build web/view.ts web/compose.ts web/hl.ts --minify --outdir=dist && cp web/bin.css skill/bin/SKILL.md dist/ && mv dist/SKILL.md dist/skill.md && cp cli/install.sh dist/install && cp public/* dist/ && cp node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2 node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2 dist/fonts/ && test \"$(ls -A dist | tr '\\n' ' ')\" = 'bin.css cli compose.js favicon.svg fonts hl.js install llms.txt skill.md view.js '"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "geist": "^1.5.1",
+    "highlight.js": "^11.11.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.148.0"
+  }
+}

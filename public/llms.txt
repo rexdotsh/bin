@@ -1,0 +1,31 @@
+bin: paste text, get a link. https://bin.rex.wf
+
+Create
+  cmd | curl --data-binary @- https://bin.rex.wf
+  curl -T crash.log https://bin.rex.wf             the file name picks the highlighting
+  curl -F a.ts=@a.ts -F b.ts=@b.ts https://bin.rex.wf   several files, one link
+  Options go in the query string: title=...  lang=...  ttl=1h|1d|7d|30d|never (default never)
+  The response is the link. Anonymous pastes also get a delete command.
+  Send "Accept: application/json" (or add ?json) for a JSON receipt.
+
+Read
+  Browsers get a viewer. Everything else gets plain text, with terminal colours stripped.
+  GET /<id>                          the paste
+  GET /<id>?head=50  ?tail=50  ?lines=10-80   a slice (add &n=1 to number the lines)
+  GET /<id>?grep=<regex>&context=3   matching lines, like grep -n -C 3
+  GET /<id>?digest                   a log's errors, warnings, summary and tail, with line numbers
+  GET /<id>/<file>                   one file of a multi-file paste (GET /<id> lists them)
+  GET /raw/<id>                      the exact bytes;  /dl/<id> downloads them
+  GET /<a>/vs/<b>                    a unified diff of two pastes
+  Response headers: x-bin-lines, x-bin-tokens (rough), x-bin-lang, x-bin-exit, x-bin-command.
+  For big pastes (over ~10k tokens), read ?digest or a slice before the whole thing.
+
+Delete
+  curl -X DELETE https://bin.rex.wf/<id> -H 'x-delete: <token from the receipt>'
+
+CLI (Node 20+): curl -fsSL https://bin.rex.wf/install | sh
+  bin file.ts          bin a.ts b.ts          cmd | bin
+  bin run -- bun test  runs the command, streams its output to a live paste, exits with its code
+  bin get <id> [--digest | --grep <re> | --tail 50]
+
+Limits: 2 MB per anonymous paste, about 20 pastes a minute. Text only; nothing is ever rendered as HTML.
