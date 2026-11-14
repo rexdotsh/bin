@@ -1153,7 +1153,7 @@ ${options("ttl", "Expires", [["never", "never"], ["1h", "in 1 hour"], ["1d", "in
 </body></html>`);
 }
 
-const FONTS = [...CSS.matchAll(/url\("?(\/fonts\/[^)"]+)"?\)/g)].map((m) => m[1]);
+const FONTS = [...CSS.matchAll(/url\("?(\/fonts\/[^)"]+)"?\)/g)].map((m) => m[1]).filter((f) => !f.includes("-ext."));
 
 function head(req: Request, title: string, extra: string, script?: string): string {
   const theme = themeOf(req);

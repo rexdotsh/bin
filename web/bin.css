@@ -1,5 +1,7 @@
 @font-face { font-family: "Geist"; src: url("/fonts/geist.woff2") format("woff2"); font-weight: 400 600; font-display: optional; }
+@font-face { font-family: "Geist"; src: url("/fonts/geist-ext.woff2") format("woff2"); font-weight: 400 600; font-display: optional; }
 @font-face { font-family: "Geist Mono"; src: url("/fonts/geist-mono.woff2") format("woff2"); font-weight: 400 600; font-display: optional; }
+@font-face { font-family: "Geist Mono"; src: url("/fonts/geist-mono-ext.woff2") format("woff2"); font-weight: 400 600; font-display: optional; }
 
 :root {
   color-scheme: dark;
