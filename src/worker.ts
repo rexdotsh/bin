@@ -3,7 +3,6 @@ import { esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON
 
 interface Env {
   BUCKET: R2Bucket;
-  OLD?: R2Bucket;
   ANON: RateLimit;
   ANON_BYTES: RateLimit;
   ASSETS: Fetcher;
@@ -52,10 +51,6 @@ export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     try {
-      if (env.OLD) {
-        if (url.pathname === "/_migrate") return harden(await migrate(req, env, url));
-        env = { ...env, BUCKET: withFallback(env.BUCKET, env.OLD) };
-      }
       return harden(await route(req, env, ctx, url));
     } catch (err) {
       console.error(err);
@@ -63,32 +58,6 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
-
-function withFallback(main: R2Bucket, old: R2Bucket): R2Bucket {
-  return {
-    get: async (key: string, opts?: R2GetOptions) => (await main.get(key, opts)) ?? old.get(key, opts),
-    head: async (key: string) => (await main.head(key)) ?? old.head(key),
-    put: (key: string, value: never, opts?: R2PutOptions) => main.put(key, value, opts),
-    delete: async (keys: string | string[]) => {
-      await Promise.all([main.delete(keys), old.delete(keys)]);
-    },
-    list: (opts?: R2ListOptions) => main.list(opts),
-  } as unknown as R2Bucket;
-}
-
-async function migrate(req: Request, env: Env, url: URL): Promise<Response> {
-  if (!(await isOwner(req, env))) return fail(403, "owner only");
-  const page = await env.OLD!.list({ cursor: url.searchParams.get("cursor") || undefined, limit: 100, include: ["customMetadata", "httpMetadata"] });
-  let copied = 0;
-  for (const o of page.objects) {
-    if (await env.BUCKET.head(o.key)) continue;
-    const src = await env.OLD!.get(o.key);
-    if (!src) continue;
-    await env.BUCKET.put(o.key, src.body, { customMetadata: src.customMetadata, httpMetadata: src.httpMetadata, onlyIf: new Headers({ "if-none-match": "*" }) });
-    copied++;
-  }
-  return json({ ok: true, copied, seen: page.objects.length, cursor: page.truncated ? page.cursor : null });
-}
 
 async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
   let parts: string[];
