@@ -13,6 +13,7 @@ export type View = {
   files?: FileRef[];
   file?: string;
   diff?: string;
+  hl?: string[] | null;
 };
 
 export const INLINE_MAX = 512 * 1024;
@@ -109,6 +110,7 @@ export function viewBody(v: View): { cls: string; html: string } {
     enc: locked ? v.enc : undefined,
     src: big ? raw : undefined,
     diff: Boolean(v.diff),
+    hl: v.hl,
     raw,
     dl,
   };

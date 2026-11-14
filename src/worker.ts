@@ -1110,6 +1110,8 @@ function viewer(
 ): Response {
   const enc = meta.enc === "1";
   const inline = enc || Number(meta.bytes || body.length) <= INLINE_MAX;
+  const ansi = inline && !enc && (meta.ansi === "1" || (extra.file !== undefined && body.includes("\x1b")));
+  const hl = inline && !enc ? (ansi ? null : hlModules(meta.lang || "", body)) : undefined;
   const heading = meta.t || meta.name || "";
   const { cls, html } = viewBody({
     id,
@@ -1118,15 +1120,15 @@ function viewer(
     wrap: cookie(req, "wrap") === "1",
     meta,
     text: enc || !inline ? undefined : stripAnsi(body),
-    ansi: inline && !enc && meta.ansi === "1" ? body : undefined,
+    ansi: ansi ? body : undefined,
     enc: enc ? body : undefined,
     files: extra.files,
     file: extra.file,
     diff: extra.diff,
+    hl,
   });
   const desc = inline ? preview(body, meta) : `${Number(meta.lines || 0).toLocaleString("en")} lines`;
   const raw = extra.diff ? "" : `/raw/${id}${extra.file ? `/${segments(extra.file)}` : ""}`;
-  const hl = inline && !enc && meta.ansi !== "1" ? hlModules(meta.lang || "", body) : null;
   const og = `${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
 <meta property="og:title" content="${esc(heading || id)}"><meta property="og:description" content="${esc(desc)}">
 <meta property="og:site_name" content="bin"><meta property="og:type" content="article"><meta name="twitter:card" content="summary">${raw ? `<link rel="alternate" type="text/plain" href="${raw}">` : ""}`;

@@ -11,6 +11,7 @@ type Data = {
   enc?: string;
   src?: string;
   diff: boolean;
+  hl?: string[] | null;
   raw: string | null;
   dl: string | null;
 };
@@ -141,7 +142,7 @@ function splitHtml(htmlText: string): string[] {
 }
 
 async function highlighted(raw: string): Promise<string[] | null> {
-  const mods = hlModules(data.lang, raw);
+  const mods = data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
   if (!mods) return null;
   const text = plain.join("\n");
   try {
