@@ -259,6 +259,7 @@ async function fill() {
     for (let i = 0; i * BLOCK < count; i++) paint(i);
     return;
   }
+  for (let i = 0; i * BLOCK < count && i * BLOCK * 24 < innerHeight + MARGIN; i++) paint(i);
   const blocks = [...pre.children];
   io = new IntersectionObserver(
     (entries) => {
@@ -266,7 +267,7 @@ async function fill() {
     },
     { rootMargin: `${MARGIN}px 0px` },
   );
-  for (const b of blocks) io.observe(b);
+  blocks.forEach((b, i) => painted[i] || io!.observe(b));
 }
 
 async function render(raw: string) {
