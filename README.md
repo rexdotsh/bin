@@ -9,7 +9,7 @@ curl -T crash.log https://bin.rex.wf
 
 - **One link, two audiences.** Browsers see a viewer with line links, highlighting and terminal colours. curl and agents get plain text with the line and token counts in headers.
 - **Read only what you need.** `?head=50`, `?tail=50`, `?lines=10-80`, `?grep=error&context=3`, and `?digest` for a log's errors, repeated warnings and tail with line numbers.
-- **`bin run -- bun test`** runs a command, streams its output to a live paste anyone can watch, and records the command, exit code and duration.
+- **`bin run -- bun test`** runs a command, then pastes its output with the command, exit code and duration.
 - **Multi-file pastes**, diffs (`/a/vs/b`), password pastes encrypted in your browser, Ctrl+V on the home page to paste instantly, keyboard shortcuts, dark and light themes.
 - **No accounts.** Anonymous pastes are fine; nothing is ever rendered as HTML.
 
@@ -19,7 +19,7 @@ curl -T crash.log https://bin.rex.wf
 curl -fsSL https://bin.rex.wf/install | sh   # Node 20+; also installs the agent skill
 
 bin file.ts                 # or several files, or: cmd | bin
-bin run -- bun test         # live paste of a command's output; exits with its code
+bin run -- bun test         # paste a command's output + exit code; exits with its code
 bin get <id> --digest       # or --grep, --head, --tail, --lines, --raw
 bin rm <id>
 ```

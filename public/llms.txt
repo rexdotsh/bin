@@ -25,7 +25,7 @@ Delete
 
 CLI (Node 20+): curl -fsSL https://bin.rex.wf/install | sh
   bin file.ts          bin a.ts b.ts          cmd | bin
-  bin run -- bun test  runs the command, streams its output to a live paste, exits with its code
+  bin run -- bun test  runs the command, then pastes its output with the exit code; exits with its code
   bin get <id> [--digest | --grep <text> | --tail 50]
 
 Limits: 2 MB per anonymous paste (10 files), 5 MB with the owner token, about 20 pastes a minute. Text only; nothing is ever rendered as HTML.
