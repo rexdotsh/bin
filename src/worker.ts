@@ -987,7 +987,8 @@ function viewer(
   const desc = inline ? preview(body, meta) : `${Number(meta.lines || 0).toLocaleString("en")} lines`;
   const raw = extra.diff ? "" : `/raw/${id}${extra.file ? `/${segments(extra.file)}` : ""}`;
   const tabs = extra.files ? `<script type="speculationrules">${TAB_RULES}</script>` : "";
-  const og = `${tabs}${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
+  const src = inline || !raw ? "" : `<link rel="preload" href="${raw}" as="fetch" crossorigin>`;
+  const og = `${tabs}${src}${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
 <meta property="og:title" content="${esc(heading || id)}"><meta property="og:description" content="${esc(desc)}">
 <meta property="og:site_name" content="bin"><meta property="og:type" content="article"><meta name="twitter:card" content="summary">${raw ? `<link rel="alternate" type="text/plain" href="${raw}">` : ""}`;
   return page(req, `${head(req, `${heading || id} · bin`, og, asset("view.js"))}
