@@ -46,6 +46,7 @@ export const escText = (s: string) => s.split("&").join("&amp;").split("<").join
 export const escRaw = (s: string) => escText(s).split("\r").join("&#13;");
 export const segments = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 export const safeJson = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+export const lineCount = (n: number) => `<span>${n.toLocaleString("en")} line${n === 1 ? "" : "s"}</span>`;
 export const gutter = (lines: number) => `${String(Math.max(lines, 1)).length + 1}ch`;
 
 export function fmtSize(n: number): string {
@@ -86,11 +87,11 @@ export function viewBody(v: View): { cls: string; html: string } {
   if (meta.exit) facts.push(`<span class="${meta.exit === "0" ? "ok" : "bad"}">exit ${esc(meta.exit)}</span>`);
   if (meta.dur) facts.push(`<span>${fmtDuration(Number(meta.dur))}</span>`);
   if (meta.lang && meta.lang !== "text") facts.push(`<span>${esc(meta.lang)}</span>`);
-  if (!enc) facts.push(`<span>${lines.toLocaleString("en")} line${lines === 1 ? "" : "s"}</span>`);
+  if (!enc) facts.push(lineCount(lines));
   facts.push(`<span>${fmtSize(Number(meta.bytes || 0))}</span>`);
   if (enc) facts.push(`<span class="lock">encrypted</span>`);
   if (meta.exp) facts.push(`<span>expires ${new Date(Number(meta.exp) * 1000).toISOString().slice(0, 10)}</span>`);
-  if (enc && v.text !== undefined) facts.push(`<span>${lines.toLocaleString("en")} line${lines === 1 ? "" : "s"}</span>`);
+  if (enc && v.text !== undefined) facts.push(lineCount(lines));
   const filePath = v.file ? `/${segments(v.file)}` : "";
   const raw = v.diff ? null : `/raw/${id}${filePath}`;
   const dl = v.diff ? null : `/dl/${id}${filePath}`;

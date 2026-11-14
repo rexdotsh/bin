@@ -1,7 +1,7 @@
-import { asset, gutter, hlModules } from "../src/page";
+import { asset, gutter, hlModules, lineCount } from "../src/page";
 import { highlight } from "./hl";
 import { decrypt } from "./crypto";
-import { plainLine, segments, splitLines } from "./text";
+import { ANSI_RE, dropStray, SGR_RE, stripAnsi, toLines, visible } from "../src/text";
 import { toggleTheme } from "./theme";
 
 type Data = {
@@ -106,19 +106,25 @@ function span(st: Style, s: string): string {
   return `<span${cls.length ? ` class="${cls.join(" ")}"` : ""}${css.length ? ` style="${css.join(";")}"` : ""}>${esc(s)}</span>`;
 }
 
-const TOKEN = /\x1b\[([0-9;:?]*)([ -/]*[@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]?|([^\x1b]+)/g;
+const TOKEN = new RegExp(`(${ANSI_RE.source})|([^\\x1b]+)`, "g");
 
-function ansiLine(st: Style, text: string): string {
-  const parts = segments(text);
-  let out = "";
-  parts.forEach((seg, idx) => {
-    const keep = idx === parts.length - 1;
-    for (const m of seg.matchAll(TOKEN)) {
-      if (m[3] !== undefined) {
-        if (keep) out += span(st, m[3]);
-      } else if (m[2] === "m") sgr(st, m[1]);
+function ansiLine(st: Style, raw: string, newline: boolean): string {
+  const pieces: [Style, number, string][] = [];
+  let text = "";
+  for (const m of raw.matchAll(TOKEN)) {
+    if (m[2] !== undefined) {
+      pieces.push([{ ...st }, text.length, m[2]]);
+      text += m[2];
+    } else {
+      const sg = SGR_RE.exec(m[1]);
+      if (sg) sgr(st, sg[1]);
     }
-  });
+  }
+  const [from, to] = visible(text, newline);
+  let out = "";
+  for (const [style, at, piece] of pieces) {
+    if (at + piece.length > from && at < to) out += span(style, dropStray(piece.slice(Math.max(0, from - at), to - at)));
+  }
   return out;
 }
 
@@ -180,7 +186,10 @@ let painted: boolean[] = [];
 let io: IntersectionObserver | null = null;
 
 function scan(st: Style, text: string) {
-  for (const seg of segments(text)) for (const m of seg.matchAll(TOKEN)) if (m[2] === "m") sgr(st, m[1]);
+  for (const m of text.matchAll(ANSI_RE)) {
+    const sg = SGR_RE.exec(m[0]);
+    if (sg) sgr(st, sg[1]);
+  }
 }
 
 function paint(i: number) {
@@ -190,7 +199,7 @@ function paint(i: number) {
   const hi = Math.min(count, lo + BLOCK);
   const st = ansi ? { ...starts[i] } : fresh();
   let rows = "";
-  for (let k = lo; k < hi; k++) rows += row(plain[k], ansi ? ansiLine(st, lines[k]) : hlRows ? (hlRows[k] ?? esc(plain[k])) : esc(plain[k]));
+  for (let k = lo; k < hi; k++) rows += row(plain[k], ansi ? ansiLine(st, lines[k], k < count - 1 || eol) : hlRows ? (hlRows[k] ?? esc(plain[k])) : esc(plain[k]));
   b.innerHTML = rows;
   painted[i] = true;
   io?.unobserve(b);
@@ -260,11 +269,9 @@ async function fill() {
 }
 
 async function render(raw: string) {
-  lines = splitLines(raw);
+  ({ raw: lines, plain, eol } = toLines(raw));
   ansi = raw.includes("\x1b");
-  plain = lines.map(plainLine);
   count = lines.length;
-  eol = raw.endsWith("\n");
   const mods = ansi ? null : data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
   const text = mods ? plain.join("\n") : "";
   if (mods && mods.length > 1 && text.length < HL_INLINE) hlRows = await highlight(mods, data.lang, text);
@@ -461,19 +468,20 @@ if (data.enc) {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const pw = $<HTMLInputElement>("pw");
+    let text: string;
     try {
-      const text = await decrypt(data.enc!, pw.value);
-      const n = splitLines(text).length;
-      form.remove();
-      document.querySelector(".meta")!.insertAdjacentHTML("beforeend", `<span>${n.toLocaleString("en")} lines</span>`);
-      pre.style.setProperty("--gw", gutter(n));
-      pre.textContent = splitLines(text).map(plainLine).join("\n");
-      pre.hidden = false;
-      await render(text);
+      text = await decrypt(data.enc!, pw.value);
     } catch {
       $("pwerr").hidden = false;
-      pw.select();
+      return pw.select();
     }
+    const n = toLines(text).plain.length;
+    form.remove();
+    document.querySelector(".meta")!.insertAdjacentHTML("beforeend", lineCount(n));
+    pre.style.setProperty("--gw", gutter(n));
+    pre.textContent = stripAnsi(text);
+    pre.hidden = false;
+    await render(text);
   });
 } else {
   const source = data.src
