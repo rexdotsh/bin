@@ -2,6 +2,8 @@
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm as removeFile, stat, writeFile } from "node:fs/promises";
+import http from "node:http";
+import https from "node:https";
 import { constants as osConstants, homedir } from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -52,6 +54,8 @@ No setup needed to paste; the owner token only lifts limits. Config: ${CONFIG_FI
 `;
 
 type Config = { url: string; token: string; hint?: string };
+type Init = { method?: string; headers?: Record<string, string>; body?: string | Buffer };
+type Reply = { status: number; ok: boolean; headers: { get(name: string): string | null }; text(): Promise<string>; json(): Promise<unknown> };
 type Receipt = {
   ok: true;
   id: string;
@@ -138,7 +142,7 @@ async function paste(args: string[]) {
   if (o.title) params.set("title", o.title);
   if (o.lang) params.set("lang", o.lang);
   if (o.ttl) params.set("ttl", o.ttl);
-  let init: RequestInit;
+  let init: Init;
   if (o.password) {
     if (files.length > 1) throw new Error("--password works with one file at a time");
     const password = await readSecret("password: ", "BIN_PASSWORD");
@@ -150,9 +154,10 @@ async function paste(args: string[]) {
     if (files[0][0]) params.set("name", files[0][0]);
     init = { method: "POST", body: files[0][1], headers: { "content-type": "text/plain; charset=utf-8" } };
   } else {
-    const form = new FormData();
-    for (const [name, body] of files) form.append(name, new Blob([body], { type: "text/plain" }), name);
-    init = { method: "POST", body: form };
+    const boundary = `----bin${randomBytes(12).toString("hex")}`;
+    const quote = (n: string) => n.replace(/"/g, "%22").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+    const parts = files.map(([name, body]) => `--${boundary}\r\ncontent-disposition: form-data; name="${quote(name)}"; filename="${quote(name)}"\r\ncontent-type: text/plain\r\n\r\n${body}\r\n`);
+    init = { method: "POST", body: `${parts.join("")}--${boundary}--\r\n`, headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
   }
   const r = await api<Receipt>(cfg, `/?${params}`, init);
   await remember(r);
@@ -533,18 +538,42 @@ function instanceUrl(raw: string): string {
   return raw.replace(/\/+$/, "");
 }
 
-async function request(cfg: Config, target: string, init: RequestInit = {}): Promise<Response> {
+function send(url: URL, init: Init): Promise<Reply> {
+  const body = init.body === undefined ? undefined : Buffer.from(init.body);
+  const headers = { ...init.headers, ...(body && { "content-length": String(body.byteLength) }) };
+  return new Promise((resolve, reject) => {
+    const req = (url.protocol === "https:" ? https : http).request(url, { method: init.method ?? "GET", headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("error", reject);
+      res.on("end", () => {
+        const data = Buffer.concat(chunks);
+        const status = res.statusCode ?? 0;
+        const header = (name: string) => {
+          const v = res.headers[name.toLowerCase()];
+          return v === undefined ? null : Array.isArray(v) ? v.join(", ") : v;
+        };
+        resolve({ status, ok: status >= 200 && status < 300, headers: { get: header }, text: async () => data.toString("utf8"), json: async () => JSON.parse(data.toString("utf8")) });
+      });
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+async function request(cfg: Config, target: string, init: Init = {}): Promise<Reply> {
   let url = new URL(target, `${cfg.url}/`);
   const origin = new URL(cfg.url).origin;
   const first = url.origin;
   for (let hop = 0; hop < 5; hop++) {
-    const headers = new Headers(init.headers);
-    if (url.origin !== first) for (const h of ["x-delete", "x-write"]) headers.delete(h);
-    if (url.origin === origin && cfg.token) headers.set("authorization", `Bearer ${cfg.token}`);
-    else headers.delete("authorization");
-    let res: Response;
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(init.headers ?? {})) headers[k.toLowerCase()] = v;
+    if (url.origin !== first) for (const h of ["x-delete", "x-write"]) delete headers[h];
+    if (url.origin === origin && cfg.token) headers.authorization = `Bearer ${cfg.token}`;
+    else delete headers.authorization;
+    let res: Reply;
     try {
-      res = await fetch(url, { ...init, headers, redirect: "manual" });
+      res = await send(url, { ...init, headers });
     } catch (err) {
       throw new Error(`could not reach ${url.origin}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -556,10 +585,8 @@ async function request(cfg: Config, target: string, init: RequestInit = {}): Pro
   throw new Error("too many redirects");
 }
 
-async function api<T>(cfg: Config, target: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  headers.set("accept", "application/json");
-  const res = await request(cfg, target, { ...init, headers });
+async function api<T>(cfg: Config, target: string, init: Init = {}): Promise<T> {
+  const res = await request(cfg, target, { ...init, headers: { ...init.headers, accept: "application/json" } });
   const body = (await res.json().catch(() => null)) as ({ ok?: boolean; error?: string } & T) | null;
   if (!body) throw new HttpError(`unexpected HTTP ${res.status} from ${new URL(target, `${cfg.url}/`).origin}`, res.status);
   if (!res.ok || !body.ok) throw new HttpError(`${body.error || `HTTP ${res.status}`}${res.status === 401 || res.status === 403 ? (cfg.hint ?? "") : ""}`, res.status);
