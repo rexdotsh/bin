@@ -563,7 +563,7 @@ async function read(
     delete fileMeta.kind;
     if (mode !== "view") return rawResponse(part.body, fileMeta, id, mode);
     if (streamable(req, url, fileMeta)) return agentStream(part.body, fileMeta);
-    return present(req, url, id, ext, fileMeta, await part.text(), { files: index.files, file });
+    return present(req, url, id, ext, fileMeta, await viewText(req, url, fileMeta, part), { files: index.files, file });
   }
   if (file) return notFound(req);
 
@@ -582,7 +582,13 @@ async function read(
 
   if (mode !== "view") return rawResponse(obj.body, meta, id, mode);
   if (streamable(req, url, meta)) return agentStream(obj.body, meta);
-  return present(req, url, id, ext, meta, await obj.text());
+  return present(req, url, id, ext, meta, await viewText(req, url, meta, obj));
+}
+
+async function viewText(req: Request, url: URL, meta: Meta, obj: R2ObjectBody): Promise<string> {
+  if (meta.enc === "1" || !(Number(meta.bytes) > INLINE_MAX) || slicing(url) || !wantsHtml(req)) return obj.text();
+  await obj.body.cancel();
+  return "";
 }
 
 function streamable(req: Request, url: URL, meta: Meta): boolean {
