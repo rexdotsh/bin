@@ -1,4 +1,4 @@
-import { viewBody } from "../src/page";
+import { hlModules, viewBody } from "../src/page";
 import { encrypt } from "./crypto";
 import { plainLine, splitLines } from "./text";
 import "./theme";
@@ -66,9 +66,35 @@ t.addEventListener("input", () => {
   warned = false;
 });
 
-async function save() {
+function copier(): (url: string | null) => Promise<unknown> {
+  let settle!: (url: string | null) => void;
+  const link = new Promise<string | null>((r) => (settle = r));
+  const blob = link.then((u) => (u === null ? Promise.reject(new Error("not saved")) : new Blob([u], { type: "text/plain" })));
+  blob.catch(() => {});
+  let early: Promise<unknown> | null = null;
+  try {
+    early = navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+    early.catch(() => {});
+  } catch {}
+  return (url) => {
+    settle(url);
+    if (url === null) return Promise.resolve();
+    return (early ?? Promise.reject()).catch(() => navigator.clipboard.writeText(url));
+  };
+}
+
+function preload(paths: string[]) {
+  for (const href of paths) {
+    if (document.querySelector(`link[href="${href}"]`)) continue;
+    const link = document.createElement("link");
+    link.rel = "modulepreload";
+    link.href = href;
+    document.head.append(link);
+  }
+}
+
+async function save(text = t.value) {
   if (busy) return;
-  const text = t.value;
   if (!text) return say("nothing to save");
   const enc = locked();
   if (enc && !pw.value) {
@@ -80,12 +106,21 @@ async function save() {
     const hit = secrets.find(([re]) => re.test(sample));
     if (hit) {
       warned = true;
+      if (t.value !== text) t.value = text;
       return say(`looks like a ${hit[1]} · save again to post anyway`, true);
     }
   }
   busy = true;
   bar.classList.add("busy");
   say(enc ? "encrypting…" : "saving…");
+  const hint = t.placeholder;
+  const held = t.value !== text;
+  if (held) {
+    t.placeholder = "";
+    t.readOnly = true;
+  }
+  const copy = copier();
+  if (!enc && (lang.value !== "auto" || !name)) preload(hlModules(lang.value === "auto" ? "" : lang.value, text) ?? []);
   let r: Receipt;
   try {
     const params = new URLSearchParams();
@@ -102,20 +137,27 @@ async function save() {
     r = (await res.json().catch(() => ({ ok: false, error: `couldn't save (HTTP ${res.status})` }))) as Receipt;
     if (!r.ok || !r.url || !r.id) throw new Error(r.error || "couldn't save");
   } catch (err) {
+    copy(null);
+    if (held) {
+      t.value = text;
+      t.placeholder = hint;
+      t.readOnly = false;
+    }
     say(err instanceof Error && err.message !== "Failed to fetch" ? err.message : "couldn't reach the server", true);
     bar.classList.remove("busy");
     busy = false;
     return;
   }
+  const copied = copy(r.url);
   if (r.delete) localStorage.setItem(`bin:del:${r.id}`, r.delete);
   try {
-    show(r, text, enc);
+    show(r, text, enc, copied);
   } catch {
     location.assign(r.url);
   }
 }
 
-function show(r: Receipt, text: string, enc: boolean) {
+function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) {
   const path = new URL(r.url!).pathname;
   const lines = splitLines(text);
   const meta: Record<string, string> = { lines: String(lines.length), bytes: String(r.bytes ?? 0) };
@@ -141,11 +183,12 @@ function show(r: Receipt, text: string, enc: boolean) {
   history.pushState(null, "", path);
   scrollTo(0, 0);
   addEventListener("popstate", () => location.pathname !== path && location.reload());
-  load("/view.js").catch(() => location.reload());
-  navigator.clipboard.writeText(r.url!).then(
-    () => toast("saved · link copied"),
-    () => toast("saved"),
-  );
+  copied
+    .then(
+      () => toast("saved · link copied"),
+      () => toast("saved"),
+    )
+    .then(() => requestAnimationFrame(() => setTimeout(() => load("/view.js").catch(() => location.reload()))));
 }
 
 function toast(msg: string) {
@@ -158,7 +201,7 @@ function toast(msg: string) {
   setTimeout(() => el.classList.remove("on"), 1800);
 }
 
-saveBtn.addEventListener("click", save, opts);
+saveBtn.addEventListener("click", () => save(), opts);
 
 document.addEventListener(
   "keydown",
@@ -181,11 +224,8 @@ document.addEventListener(
     if (e.target !== t && (e.target as HTMLElement).closest?.("input, select")) return;
     const pasted = e.clipboardData?.getData("text/plain") ?? "";
     if (!pasted) return;
-    if (e.target !== t) {
-      e.preventDefault();
-      t.value = pasted;
-    }
-    setTimeout(() => t.value && save(), 0);
+    e.preventDefault();
+    save(pasted.replace(/\r\n?/g, "\n"));
   },
   opts,
 );
