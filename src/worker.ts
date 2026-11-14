@@ -1,5 +1,6 @@
 import CSS from "../dist/bin.css";
 import { asset, esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
+import { stripAnsi } from "./text";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -704,16 +705,6 @@ function bareCr(src: string | Uint8Array): boolean {
 }
 
 const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
-const ANSI_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()*+\-./][ -~]|\x1b[@-Z\\-_]?/g;
-
-function stripAnsi(s: string): string {
-  if (!/[\x00-\x08\x0b-\x1f\x7f]/.test(s)) return s;
-  let out = s.replace(ANSI_RE, "");
-  if (out.includes("\r")) out = out.replace(/\r\n/g, "\n");
-  if (out.includes("\r")) out = out.replace(/^[^\n\r]*\r[^\n]*/gm, (l) => l.slice(l.lastIndexOf("\r", l.length - 2) + 1).replace(/\r$/, ""));
-  return out.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
-
 function pickLang(given: string | null, name: string, body: string): string {
   const g = given?.toLowerCase();
   if (g && g !== "auto") return EXT_LANG[g] ?? (LANGS.has(g) ? g : "");
