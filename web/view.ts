@@ -9,7 +9,6 @@ type Data = {
   name: string;
   lang: string;
   enc?: string;
-  live?: number;
   src?: string;
   diff: boolean;
   raw: string | null;
@@ -105,11 +104,11 @@ function span(st: Style, s: string): string {
 
 const TOKEN = /\x1b\[([0-9;:?]*)([ -/]*[@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]?|([^\x1b]+)/g;
 
-function ansiLine(st: Style, text: string, emit = true): string {
+function ansiLine(st: Style, text: string): string {
   const parts = segments(text);
   let out = "";
   parts.forEach((seg, idx) => {
-    const keep = emit && idx === parts.length - 1;
+    const keep = idx === parts.length - 1;
     for (const m of seg.matchAll(TOKEN)) {
       if (m[3] !== undefined) {
         if (keep) out += span(st, m[3]);
@@ -142,7 +141,7 @@ function splitHtml(htmlText: string): string[] {
 }
 
 async function highlighted(text: string): Promise<string[] | null> {
-  const mods = data.live === undefined ? hlModules(data.lang, text.length) : null;
+  const mods = hlModules(data.lang, text.length);
   if (!mods) return null;
   try {
     const [core, grammar] = await Promise.all(mods.map(load));
@@ -207,92 +206,13 @@ async function render(raw: string) {
       t = performance.now();
     }
   }
-  if (lines.length > CV_MIN && data.live === undefined) {
+  if (lines.length > CV_MIN) {
     pre.style.setProperty("--cw", `${widest}ch`);
     pre.classList.add("cv");
   }
   pre.innerHTML = out.join("");
   count = lines.length;
   fromHash();
-}
-
-// ---------------------------------------------------------------- live
-
-const style = fresh();
-let pending = "";
-let pendingRow = false;
-
-function appendRows(rows: string[]) {
-  for (let i = 0; i < rows.length; ) {
-    const room = BLOCK - (count & (BLOCK - 1));
-    const take = rows.slice(i, i + room).join("");
-    const n = Math.min(room, rows.length - i);
-    if (count & (BLOCK - 1)) pre.lastElementChild!.insertAdjacentHTML("beforeend", take);
-    else pre.insertAdjacentHTML("beforeend", block(count, take, BLOCK));
-    count += n;
-    i += n;
-  }
-}
-
-function appendText(chunk: string) {
-  if (pendingRow) {
-    const b = pre.lastElementChild!;
-    b.lastElementChild!.remove();
-    if (!b.childElementCount) b.remove();
-    plain.pop();
-    count--;
-    pendingRow = false;
-  }
-  const parts = (pending + chunk).replace(/\r\n/g, "\n").split("\n");
-  pending = parts.pop()!;
-  const cut = pending.replace(/\r+$/, "").lastIndexOf("\r");
-  if (cut > 0) {
-    ansiLine(style, pending.slice(0, cut + 1), false);
-    pending = pending.slice(cut + 1);
-  }
-  const rows: string[] = [];
-  for (const l of parts) {
-    const s = plainLine(l);
-    plain.push(s);
-    rows.push(row(s, ansiLine(style, l)));
-  }
-  if (pending) {
-    const s = plainLine(pending);
-    plain.push(s);
-    rows.push(row(s, ansiLine({ ...style }, pending)));
-    pendingRow = true;
-  }
-  appendRows(rows);
-  if (String(count).length > 6) pre.style.setProperty("--gw", gutter(count, true));
-}
-
-function startLive(from: number) {
-  let tries = 0;
-  const connect = () => {
-    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/${data.id}/_live?from=${from}`);
-    ws.onopen = () => {
-      tries = 0;
-      delete document.body.dataset.off;
-    };
-    ws.onmessage = (m) => {
-      const msg = JSON.parse(m.data as string) as { append?: string; n?: number; sealed?: boolean; gone?: boolean };
-      if (msg.sealed) return location.reload();
-      if (msg.gone) return (document.body.dataset.gone = "1");
-      if (msg.append === undefined) return;
-      const stick = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 40;
-      appendText(msg.append);
-      from = msg.n ?? from;
-      const n = document.getElementById("nlines");
-      if (n) n.textContent = `${plain.length.toLocaleString("en")} lines`;
-      if (stick) window.scrollTo(0, document.documentElement.scrollHeight);
-    };
-    ws.onclose = () => {
-      if (document.body.dataset.gone) return;
-      if (++tries > 5) return (document.body.dataset.off = "1");
-      setTimeout(connect, 1000 * tries);
-    };
-  };
-  connect();
 }
 
 // ---------------------------------------------------------------- selection
@@ -483,7 +403,7 @@ if (data.enc) {
       const n = splitLines(text).length;
       form.remove();
       document.querySelector(".meta")!.insertAdjacentHTML("beforeend", `<span>${n.toLocaleString("en")} lines</span>`);
-      pre.style.setProperty("--gw", gutter(n, false));
+      pre.style.setProperty("--gw", gutter(n));
       pre.textContent = `\n${splitLines(text).map(plainLine).join("\n")}`;
       pre.hidden = false;
       await render(text);
@@ -496,24 +416,5 @@ if (data.enc) {
   const source = data.src
     ? fetch(data.src).then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
     : Promise.resolve(document.querySelector<HTMLTemplateElement>("#ansi")?.content.textContent ?? pre.textContent ?? "");
-  source.then(
-    async (text) => {
-      if (data.live === undefined) return render(text);
-      await render(data.src ? "" : text);
-      if (!data.src) {
-        const lines = splitLines(text);
-        lines.forEach((l) => ansiLine(style, l, false));
-        const tail = text.endsWith("\n") || !lines.length ? "" : lines[lines.length - 1];
-        if (tail) {
-          pre.lastElementChild?.lastElementChild?.remove();
-          if (pre.lastElementChild && !pre.lastElementChild.childElementCount) pre.lastElementChild.remove();
-          plain.pop();
-          count--;
-          appendText(tail);
-        }
-      }
-      startLive(data.live);
-    },
-    () => toast("couldn't load this paste"),
-  );
+  source.then(render, () => toast("couldn't load this paste"));
 }

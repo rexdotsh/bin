@@ -12,7 +12,6 @@ export type View = {
   src?: string;
   files?: FileRef[];
   file?: string;
-  live?: number;
   diff?: string;
 };
 
@@ -32,7 +31,7 @@ export const escText = (s: string) => s.split("&").join("&amp;").split("<").join
 export const escRaw = (s: string) => escText(s).split("\r").join("&#13;");
 export const segments = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 export const safeJson = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-export const gutter = (lines: number, live: boolean) => `${Math.max(String(Math.max(lines, 1)).length, live ? 6 : 1) + 1}ch`;
+export const gutter = (lines: number) => `${String(Math.max(lines, 1)).length + 1}ch`;
 
 export function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -65,7 +64,6 @@ function icons(raw: string | null, dl: string | null): string {
 export function viewBody(v: View): { cls: string; html: string } {
   const { meta, id } = v;
   const enc = meta.enc === "1";
-  const live = v.live !== undefined;
   const heading = meta.t || meta.name || "";
   const lines = Number(meta.lines || 0);
   const facts: string[] = [];
@@ -73,11 +71,10 @@ export function viewBody(v: View): { cls: string; html: string } {
   if (meta.exit) facts.push(`<span class="${meta.exit === "0" ? "ok" : "bad"}">exit ${esc(meta.exit)}</span>`);
   if (meta.dur) facts.push(`<span>${fmtDuration(Number(meta.dur))}</span>`);
   if (meta.lang && meta.lang !== "text") facts.push(`<span>${esc(meta.lang)}</span>`);
-  if (!enc) facts.push(`<span id="nlines">${lines.toLocaleString("en")} lines</span>`);
+  if (!enc) facts.push(`<span>${lines.toLocaleString("en")} lines</span>`);
   facts.push(`<span>${fmtSize(Number(meta.bytes || 0))}</span>`);
   if (enc) facts.push(`<span class="lock">encrypted</span>`);
   if (meta.exp) facts.push(`<span>expires ${new Date(Number(meta.exp) * 1000).toISOString().slice(0, 10)}</span>`);
-  if (live) facts.push(`<span class="live"><i>live</i><i>disconnected</i></span>`);
   const filePath = v.file ? `/${segments(v.file)}` : "";
   const raw = v.diff ? null : `/raw/${id}${filePath}`;
   const dl = v.diff ? null : `/dl/${id}${filePath}`;
@@ -88,7 +85,7 @@ export function viewBody(v: View): { cls: string; html: string } {
     : "";
   const locked = enc && v.text === undefined;
   const big = !locked && v.text === undefined;
-  const style = `--gw:${gutter(lines, live)}${big ? `;min-height:${lines * LINE_PX}px` : ""}`;
+  const style = `--gw:${gutter(lines)}${big ? `;min-height:${lines * LINE_PX}px` : ""}`;
   const body = locked
     ? ""
     : big
@@ -100,7 +97,6 @@ export function viewBody(v: View): { cls: string; html: string } {
     name: meta.name || "",
     lang: meta.lang || "",
     enc: locked ? v.enc : undefined,
-    live: v.live,
     src: big ? raw : undefined,
     diff: Boolean(v.diff),
     raw,
@@ -115,9 +111,9 @@ ${tabs}${locked ? `<form id="unlock" class="unlock"><p>This paste is encrypted. 
 <pre id="text" class="code" style="${style}"${locked ? " hidden" : ""}>
 ${body}</pre>
 </main>
-${live ? "" : `<footer class="foot"><div class="wrap"><span><kbd>y</kbd>copy</span><span><kbd>r</kbd>raw</span><span><kbd>/</kbd>find</span><span><kbd>g</kbd>line</span><span><kbd>w</kbd>wrap</span><span><kbd>e</kbd>edit as new</span><span><kbd>t</kbd>theme</span><span class="sp"></span><span>${esc(v.host)}</span></div></footer>`}
+<footer class="foot"><div class="wrap"><span><kbd>y</kbd>copy</span><span><kbd>r</kbd>raw</span><span><kbd>/</kbd>find</span><span><kbd>g</kbd>line</span><span><kbd>w</kbd>wrap</span><span><kbd>e</kbd>edit as new</span><span><kbd>t</kbd>theme</span><span class="sp"></span><span>${esc(v.host)}</span></div></footer>
 <div id="find" class="find" hidden><input id="q" placeholder="find" autocomplete="off" aria-label="Find"><span id="count"></span></div>
 ${v.ansi !== undefined && !big ? `<template id="ansi">${escRaw(v.ansi)}</template>` : ""}<script type="application/json" id="data">${safeJson(data)}</script>`;
-  const cls = ["view", v.wrap && "wrap-on", (locked || big) && "tall", live && "live-on"].filter(Boolean).join(" ");
+  const cls = ["view", v.wrap && "wrap-on", (locked || big) && "tall"].filter(Boolean).join(" ");
   return { cls, html };
 }

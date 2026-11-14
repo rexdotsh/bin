@@ -49,17 +49,6 @@ h1 + .meta { padding-top: 6px; }
 .meta .bad { color: var(--red); }
 .meta .ok { color: var(--green); }
 .meta .lock { color: var(--amber); }
-.meta .live { color: var(--red); display: inline-grid; grid-template-columns: auto auto; align-items: center; justify-items: start; }
-.meta .live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px; animation: pulse 1.6s ease-in-out infinite; }
-.meta .live i { font-style: normal; grid-area: 1 / 2; }
-.meta .live i + i, body[data-off] .meta .live i:first-of-type { visibility: hidden; }
-body[data-off] .meta .live { color: var(--mute); }
-body[data-off] .meta .live::before { animation: none; }
-body[data-off] .meta .live i + i { visibility: visible; }
-body[data-gone] .meta .live { visibility: hidden; }
-.meta #nlines { font-variant-numeric: tabular-nums; }
-.live-on .meta #nlines { min-width: 10ch; }
-@keyframes pulse { 50% { opacity: 0.25; } }
 
 .tabs { display: flex; gap: 2px; overflow-x: auto; margin: -8px 0 20px; border-bottom: 1px solid var(--line); }
 .tabs a { font: 13px var(--mono); color: var(--mute2); text-decoration: none; padding: 8px 12px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }

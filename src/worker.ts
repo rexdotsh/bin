@@ -1122,12 +1122,11 @@ function viewer(
     enc: enc ? body : undefined,
     files: extra.files,
     file: extra.file,
-    live: extra.live === undefined ? undefined : inline ? extra.live : 0,
     diff: extra.diff,
   });
   const desc = inline ? preview(body, meta) : `${Number(meta.lines || 0).toLocaleString("en")} lines`;
   const raw = extra.diff ? "" : `/raw/${id}${extra.file ? `/${segments(extra.file)}` : ""}`;
-  const hl = inline && !enc && meta.ansi !== "1" && extra.live === undefined ? hlModules(meta.lang || "", body.length) : null;
+  const hl = inline && !enc && meta.ansi !== "1" ? hlModules(meta.lang || "", body.length) : null;
   const og = `${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
 <meta property="og:title" content="${esc(heading || id)}"><meta property="og:description" content="${esc(desc)}">
 <meta property="og:site_name" content="bin"><meta property="og:type" content="article"><meta name="twitter:card" content="summary">${raw ? `<link rel="alternate" type="text/plain" href="${raw}">` : ""}`;
