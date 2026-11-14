@@ -986,7 +986,8 @@ function viewer(
   });
   const desc = inline ? preview(body, meta) : `${Number(meta.lines || 0).toLocaleString("en")} lines`;
   const raw = extra.diff ? "" : `/raw/${id}${extra.file ? `/${segments(extra.file)}` : ""}`;
-  const og = `${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
+  const tabs = extra.files ? `<script type="speculationrules">${TAB_RULES}</script>` : "";
+  const og = `${tabs}${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
 <meta property="og:title" content="${esc(heading || id)}"><meta property="og:description" content="${esc(desc)}">
 <meta property="og:site_name" content="bin"><meta property="og:type" content="article"><meta name="twitter:card" content="summary">${raw ? `<link rel="alternate" type="text/plain" href="${raw}">` : ""}`;
   return page(req, `${head(req, `${heading || id} · bin`, og, asset("view.js"))}
@@ -994,6 +995,9 @@ function viewer(
 ${html}
 </body></html>`);
 }
+
+const TAB_RULE = { source: "document", where: { selector_matches: ".tabs a" }, eagerness: "moderate" };
+const TAB_RULES = JSON.stringify({ prefetch: [TAB_RULE], prerender: [TAB_RULE] });
 
 function composePage(req: Request): Response {
   const mac = /Macintosh|iPhone|iPad/.test(req.headers.get("user-agent") ?? "");
@@ -1076,7 +1080,7 @@ function harden(res: Response): Response {
   if ((h.get("content-type") ?? "").startsWith("text/html")) {
     h.set(
       "content-security-policy",
-      "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'self' 'inline-speculation-rules'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     );
     h.set("x-frame-options", "DENY");
   } else h.set("content-security-policy", "sandbox; default-src 'none'");
