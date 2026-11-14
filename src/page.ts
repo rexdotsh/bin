@@ -109,7 +109,7 @@ export function viewBody(v: View): { cls: string; html: string } {
     name: meta.name || "",
     lang: meta.lang || "",
     enc: locked ? v.enc : undefined,
-    src: big ? raw : undefined,
+    src: big ? (v.diff ? `/${id}` : raw) : undefined,
     diff: Boolean(v.diff),
     hl: v.hl,
     raw,

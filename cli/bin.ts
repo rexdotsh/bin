@@ -11,6 +11,7 @@ const DEFAULT_URL = "https://bin.rex.wf";
 const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "bin");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const DELETES_FILE = path.join(CONFIG_DIR, "deletes.json");
+const DELETES_DIR = path.join(CONFIG_DIR, "deletes");
 const MAX_BYTES = 5 * 1024 * 1024;
 const ITER = 600_000;
 const isLocal = (host: string) => ["localhost", "127.0.0.1", "[::1]"].includes(host) || host.endsWith(".localhost");
@@ -177,7 +178,7 @@ async function run(args: string[]) {
   if (!cmd.length) throw new Error("usage: bin run [--title t] [--ttl t] -- <command> [args]");
   const cfg = await loadConfig(o.url);
   const started = Date.now();
-  const shown = redact(cmd.map(shellQuote).join(" "));
+  const shown = redactArgs(cmd).map(shellQuote).join(" ");
   const session = collect(cfg, { title: o.title, ttl: o.ttl, cmd: shown });
   const env = { ...process.env };
   if (!env.NO_COLOR && !env.FORCE_COLOR) env.FORCE_COLOR = "1";
@@ -232,6 +233,11 @@ function collect(cfg: Config, opts: { title?: string; ttl?: string; cmd: string 
   let cut = 0;
   const keep = (text: string) => {
     if (!text) return;
+    if (Buffer.byteLength(text) > limit) {
+      const tail = Buffer.from(text).subarray(-limit).toString("utf8").replace(/^\uFFFD+/, "");
+      cut += Buffer.byteLength(text) - Buffer.byteLength(tail);
+      text = tail;
+    }
     parts.push(text);
     size += Buffer.byteLength(text);
     while (size > limit && parts.length > 1) {
@@ -245,7 +251,13 @@ function collect(cfg: Config, opts: { title?: string; ttl?: string; cmd: string 
     push: (s) => {
       pending += s;
       const nl = pending.lastIndexOf("\n") + 1;
-      if (!nl) return;
+      if (!nl) {
+        if (pending.length > 1024 * 1024) {
+          keep(redactLine(pending).replaceAll("\0", ""));
+          pending = "";
+        }
+        return;
+      }
       keep(redactLine(pending.slice(0, nl)).replaceAll("\0", ""));
       pending = pending.slice(nl);
     },
@@ -327,14 +339,14 @@ async function rm(args: string[]) {
   if (positionals.length !== 1) throw new Error("usage: bin rm <id|url>");
   const cfg = await loadConfig(o.url);
   const { base, id } = locate(cfg, positionals[0]);
-  const saved = ((await readJson(DELETES_FILE)) ?? {}) as Record<string, string>;
-  const key = `${new URL(base).origin}/${id}`;
+  const file = tokenFile(base, id);
+  const legacy = ((await readJson(DELETES_FILE)) ?? {}) as Record<string, string>;
+  const saved = (await readText(file))?.trim() || legacy[`${new URL(base).origin}/${id}`];
   const headers: Record<string, string> = {};
-  if (saved[key]) headers["x-delete"] = saved[key];
+  if (saved) headers["x-delete"] = saved;
   else if (!cfg.token) throw new Error("no delete token for that paste on this machine (and no owner token)");
   const res = await api<{ deleted: string }>(cfg, `${base}/${id}`, { method: "DELETE", headers });
-  delete saved[key];
-  await writePrivate(DELETES_FILE, `${JSON.stringify(saved, null, 2)}\n`);
+  await removeFile(file, { force: true });
   if (o.json) return printJson(res);
   console.log(`deleted ${id}`);
 }
@@ -354,11 +366,11 @@ function locate(cfg: Config, ref: string): { base: string; id: string; file: str
   return { base: cfg.url, id, file: rest.map(encodeURIComponent).join("/"), query: "" };
 }
 
+const tokenFile = (origin: string, id: string) => path.join(DELETES_DIR, `${new URL(origin).host.replace(/[^\w.-]/g, "_")}_${id.replace(/\+/g, "%2B")}`);
+
 async function remember(r: Receipt) {
   if (!r.delete) return;
-  const saved = ((await readJson(DELETES_FILE)) ?? {}) as Record<string, string>;
-  saved[`${new URL(r.url).origin}/${r.id}`] = r.delete;
-  await writePrivate(DELETES_FILE, `${JSON.stringify(saved, null, 2)}\n`);
+  await writePrivate(tokenFile(r.url, r.id), `${r.delete}\n`);
 }
 
 // ---------------------------------------------------------------- secrets + crypto
@@ -387,6 +399,19 @@ function findSecrets(text: string): { line: number; kind: string; preview: strin
   return out.sort((a, b) => a.line - b.line);
 }
 
+const SECRET_FLAG = /^--?[\w-]*(?:token|secret|password|passwd|api[-_]?key|auth)[\w-]*$/i;
+
+function redactArgs(args: string[]): string[] {
+  return args.map((a, i) => {
+    if (i > 0 && SECRET_FLAG.test(args[i - 1])) return "[redacted]";
+    const eq = a.indexOf("=");
+    if (eq > 0 && /token|secret|password|passwd|api[-_]?key|auth/i.test(a.slice(0, eq))) return `${a.slice(0, eq + 1)}[redacted]`;
+    return redact(a);
+  });
+}
+
+const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()*+\-./][ -~]|\x1b[@-Z\\-_]?/g;
+
 function makeRedactor(): (text: string) => string {
   let inKey = false;
   return (text) =>
@@ -402,7 +427,11 @@ function makeRedactor(): (text: string) => string {
           inKey = !/-----END [A-Z ]*PRIVATE KEY-----/.test(line.slice(begin));
           return `${redact(line.slice(0, begin))}[redacted private key]`;
         }
-        return redact(line);
+        const once = redact(line);
+        if (once !== line || !line.includes("\x1b")) return once;
+        const plain = line.replace(ANSI, "");
+        const clean = redact(plain);
+        return clean === plain ? line : clean;
       })
       .join("\n");
 }

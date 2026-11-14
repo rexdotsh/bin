@@ -114,7 +114,7 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
   const ttl = q.get("ttl") || "never";
   if (owner && q.get("expires")) {
     const exp = Number(q.get("expires"));
-    if (!Number.isFinite(exp) || exp <= 0) return fail(400, "expires must be a unix timestamp");
+    if (!Number.isFinite(exp) || exp <= 0 || exp > 253402300799) return fail(400, "expires must be a unix timestamp before the year 10000");
     meta.exp = String(Math.floor(exp));
   } else if (ttl !== "never") {
     if (!Object.hasOwn(TTL, ttl)) return fail(400, "ttl must be 1h, 1d, 7d, 30d or never");
@@ -212,14 +212,18 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
     meta.tok = String(entries.reduce((n, f) => n + f.tokens, 0));
     const placed = await claim(env, id, JSON.stringify({ files: entries }), meta);
     if (!placed) return fail(409, "that id is taken");
-    await Promise.all(
+    const writes = await Promise.allSettled(
       files.map(([name, bytes], i) =>
         env.BUCKET.put(`p/${placed.id}/${name}`, bytes, {
           httpMetadata: { contentType: "text/plain; charset=utf-8" },
-          customMetadata: { lang: entries[i].lang, ...statsOf(bytes) },
+          customMetadata: { lang: entries[i].lang, ...statsOf(bytes), ...(CONTROL_RE.test(files[i][2]) && { ansi: "1" }) },
         }),
       ),
     );
+    if (writes.some((w) => w.status === "rejected")) {
+      await env.BUCKET.delete([`p/${placed.id}`, ...files.map(([name]) => `p/${placed.id}/${name}`)]);
+      return fail(503, "storage hiccup while saving the files; nothing was kept, try again");
+    }
     const warnings = [...new Set(files.flatMap(([, , body]) => scanSecrets(body)))];
     return receipt(placed.id, "", {
       files: entries.map((f) => ({ ...f, url: `${url.origin}/${placed.id}/${encodePath(f.name)}` })),
@@ -260,6 +264,7 @@ async function single(
     meta.lang = pickLang(q.get("lang"), name, "");
   } else {
     Object.assign(meta, statsOf(bytes));
+    if (CONTROL_RE.test(body)) meta.ansi = "1";
     meta.lang = pickLang(q.get("lang"), name, body);
     warnings = scanSecrets(body);
   }
@@ -462,25 +467,27 @@ function present(
   const plain = stripAnsi(body);
   if (q.has("digest")) return text(digest(plain, meta), 200, headers);
   if (q.has("grep")) {
-    const out = grep(plain, q.get("grep")!, Math.min(Math.max(0, Number(q.get("context")) || 0), 20), range(q.get("lines")));
+    const ctxRaw = q.get("context");
+    if (ctxRaw !== null && !/^(?:[0-9]|1[0-9]|20)$/.test(ctxRaw)) return fail(400, "context must be a whole number from 0 to 20");
+    const within = q.has("lines") ? range(q.get("lines")) : null;
+    if (q.has("lines") && (!within || within[0] < 1 || within[1] < within[0])) return fail(400, "lines must look like 10-80 or 42");
+    const out = grep(plain, q.get("grep")!, Number(ctxRaw ?? 0), within);
     if (typeof out !== "string") return fail(400, out.error);
     return text(out, 200, headers);
   }
   if (q.has("lines") || q.has("head") || q.has("tail")) {
-    const lines = plain.split("\n");
-    if (plain.endsWith("\n")) lines.pop();
+    const total = Number(meta.lines) || 0;
     let span: [number, number] | null = null;
     const count = (k: string) => (/^[1-9]\d{0,8}$/.test(q.get(k) ?? "") ? Number(q.get(k)) : 0);
     if (q.has("lines")) span = range(q.get("lines"));
     else if (q.has("head")) span = count("head") ? [1, count("head")] : null;
-    else span = count("tail") ? [Math.max(1, lines.length - count("tail") + 1), lines.length] : null;
+    else span = count("tail") ? [Math.max(1, total - count("tail") + 1), total] : null;
     if (!span || span[0] < 1 || span[1] < span[0]) return fail(400, "use lines=10-80 or lines=42, head=N or tail=N, with N at least 1");
-    if (lines.length && span[0] > lines.length) return fail(400, `the paste has ${lines.length} line${lines.length === 1 ? "" : "s"}`);
-    const [a, b] = [Math.max(1, span[0]), Math.min(lines.length, span[1])];
+    if (total && span[0] > total) return fail(400, `the paste has ${plural(total, "line")}`);
+    const [a, b] = [span[0], Math.min(total, span[1])];
     headers.set("x-bin-range", `${a}-${b}`);
-    const picked = lines.slice(a - 1, b);
-    const numbered = q.get("n") === "1" ? picked.map((l, i) => `${a + i}:${l}`) : picked;
-    return text(numbered.length ? `${numbered.join("\n")}\n` : "", 200, headers);
+    const picked = cutLines(plain, a, b, q.has("tail"));
+    return text(q.get("n") === "1" ? numberLines(picked, a) : picked, 200, headers);
   }
   return text(plain, 200, headers);
 }
@@ -680,6 +687,7 @@ function bareCr(src: string | Uint8Array): boolean {
   return false;
 }
 
+const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const ANSI_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()*+\-./][ -~]|\x1b[@-Z\\-_]?/g;
 
 function stripAnsi(s: string): string {
@@ -737,6 +745,39 @@ function decodeText(bytes: Uint8Array): string | null {
   } catch {
     return null;
   }
+}
+
+function cutLines(s: string, a: number, b: number, fromEnd: boolean): string {
+  let start = 0;
+  if (fromEnd) {
+    let end = s.endsWith("\n") ? s.length - 1 : s.length;
+    for (let k = b; k >= a; k--) {
+      start = end > 0 ? s.lastIndexOf("\n", end - 1) + 1 : 0;
+      end = start - 1;
+    }
+  } else {
+    for (let k = 1; k < a; k++) {
+      const nl = s.indexOf("\n", start);
+      if (nl === -1) return "";
+      start = nl + 1;
+    }
+  }
+  let end = start;
+  for (let k = a; k <= b && end < s.length; k++) {
+    const nl = s.indexOf("\n", end);
+    end = nl === -1 ? s.length : nl + 1;
+  }
+  const out = s.slice(start, end);
+  return out && !out.endsWith("\n") ? `${out}\n` : out;
+}
+
+function numberLines(s: string, first: number): string {
+  if (!s) return s;
+  return `${s
+    .slice(0, -1)
+    .split("\n")
+    .map((l, i) => `${first + i}:${l}`)
+    .join("\n")}\n`;
 }
 
 function range(spec: string | null): [number, number] | null {
@@ -808,27 +849,43 @@ function matcher(pattern: string): ((line: string) => boolean) | { error: string
 function grep(body: string, pattern: string, context: number, within: [number, number] | null): string | { error: string } {
   const test = matcher(pattern);
   if (typeof test !== "function") return test;
-  const lines = body.split("\n");
-  if (body.endsWith("\n")) lines.pop();
-  const [lo, hi] = within ?? [1, lines.length];
-  const hits: number[] = [];
-  for (let i = Math.max(0, lo - 1); i < Math.min(lines.length, hi); i++) if (test(lines[i])) hits.push(i);
-  if (!hits.length) return "";
+  if (!body) return "";
+  const [lo, hi] = within ?? [1, Infinity];
+  const total = body.length - (body.endsWith("\n") ? 1 : 0);
   const out: string[] = [];
-  let last = -2;
-  const isHit = new Set(hits);
-  for (const h of hits) {
-    const a = Math.max(0, h - context);
-    const b = Math.min(lines.length - 1, h + context);
-    if (out.length && a > last + 1) out.push("--");
-    for (let i = Math.max(a, last + 1); i <= b; i++) out.push(`${i + 1}${isHit.has(i) ? ":" : "-"}${lines[i]}`);
-    last = Math.max(last, b);
-    if (out.length > 5000) {
-      out.push("-- (stopped after 5000 lines; narrow the pattern or add &lines=)");
-      break;
+  const prev: { n: number; t: string }[] = [];
+  let n = 0;
+  let pos = 0;
+  let shown = 0;
+  let after = 0;
+  while (pos <= total && n < hi) {
+    let nl = body.indexOf("\n", pos);
+    if (nl === -1 || nl > total) nl = total;
+    const t = body.slice(pos, nl);
+    n++;
+    pos = nl + 1;
+    if (n < lo) continue;
+    if (test(t)) {
+      if (out.length && (prev[0]?.n ?? n) > shown + 1) out.push("--");
+      for (const p of prev) out.push(`${p.n}-${p.t}`);
+      prev.length = 0;
+      out.push(`${n}:${t}`);
+      shown = n;
+      after = context;
+      if (out.length > 5000) {
+        out.push("-- (stopped after 5000 lines; narrow the pattern or add &lines=)");
+        break;
+      }
+    } else if (after > 0) {
+      out.push(`${n}-${t}`);
+      shown = n;
+      after--;
+    } else if (context > 0) {
+      prev.push({ n, t });
+      if (prev.length > context) prev.shift();
     }
   }
-  return `${out.join("\n")}\n`;
+  return out.length ? `${out.join("\n")}\n` : "";
 }
 
 const ERROR_RE = /\b(?:error|errors|failed|failure|fatal|panic|panicked|exception|traceback)\b|✗|✘|\bFAIL(?:ED)?\b|\bERR!|^E\s{2,}/i;
