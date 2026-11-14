@@ -31,5 +31,5 @@ export async function decrypt(envelope: string, password: string): Promise<strin
   if (!(e.iter >= 100_000 && e.iter <= 5_000_000)) throw new Error("unsupported key setting");
   const k = await key(password, fromB64(e.salt), e.iter);
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64(e.iv) as BufferSource }, k, fromB64(e.ct) as BufferSource);
-  return new TextDecoder().decode(pt);
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(pt);
 }
