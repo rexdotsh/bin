@@ -377,11 +377,18 @@ async function readPaste(
       return new Response(null, { headers });
     }
   }
+  const early = file ? env.BUCKET.get(`p/${id}/${file}`) : null;
+  early?.catch(() => {});
+  const drop = () => early && ctx.waitUntil(early.then((p) => p?.body.cancel(), () => {}));
   const obj = await getPaste(env, ctx, id);
-  if (!obj) return notFound(req);
+  if (!obj) {
+    drop();
+    return notFound(req);
+  }
   const meta = obj.customMetadata ?? {};
+  if (meta.kind !== "multi") drop();
   const left = meta.exp ? Number(meta.exp) - Math.floor(Date.now() / 1000) : Infinity;
-  const res = await readBody(req, env, url, id, ext, file, mode, obj, meta);
+  const res = await readBody(req, env, url, id, ext, file, mode, obj, meta, early);
   if (res.status === 200 && left > 0) res.headers.set("x-max-age", String(Math.min(300, left)));
   return res;
 }
@@ -396,6 +403,7 @@ async function readBody(
   mode: "view" | "raw" | "dl",
   obj: R2ObjectBody,
   meta: Meta,
+  early: Promise<R2ObjectBody | null> | null,
 ): Promise<Response> {
   if (meta.kind === "multi") {
     const index = JSON.parse(await obj.text()) as { files: FileEntry[] };
@@ -404,8 +412,11 @@ async function readBody(
       file = index.files[0].name;
     }
     const entry = index.files.find((f) => f.name === file);
-    const part = entry && (await env.BUCKET.get(`p/${id}/${file}`));
-    if (!entry || !part) return notFound(req);
+    const part = await (early ?? (entry ? env.BUCKET.get(`p/${id}/${file}`) : null));
+    if (!entry || !part) {
+      await part?.body.cancel();
+      return notFound(req);
+    }
     const fileMeta: Meta = { ...meta, ...(part.customMetadata ?? {}), name: file, lang: entry.lang, lines: String(entry.lines), bytes: String(entry.bytes), tok: String(entry.tokens) };
     delete fileMeta.kind;
     if (mode !== "view") return rawResponse(part.body, fileMeta, id, mode);
