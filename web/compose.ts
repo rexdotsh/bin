@@ -195,6 +195,17 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
 
 saveBtn.addEventListener("click", () => save(), opts);
 
+const vv = window.visualViewport;
+if (vv) {
+  const fit = () => {
+    const keyboard = document.activeElement === t && Math.abs(vv.scale - 1) < 0.01 && vv.height < document.documentElement.clientHeight - 120;
+    t.style.minHeight = keyboard ? "0" : "";
+    t.style.maxHeight = keyboard ? `${Math.max(96, vv.offsetTop + vv.height - t.getBoundingClientRect().top - 16)}px` : "";
+  };
+  vv.addEventListener("resize", fit, opts);
+  t.addEventListener("blur", fit, opts);
+}
+
 document.addEventListener(
   "keydown",
   (e) => {

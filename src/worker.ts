@@ -1049,7 +1049,9 @@ const TAB_RULE = { source: "document", where: { selector_matches: ".tabs a" }, e
 const TAB_RULES = JSON.stringify({ prefetch: [TAB_RULE], prerender: [TAB_RULE] });
 
 function composePage(req: Request): Response {
-  const mac = /Macintosh|iPhone|iPad/.test(req.headers.get("user-agent") ?? "");
+  const ua = req.headers.get("user-agent") ?? "";
+  const mac = /Macintosh|iPhone|iPad/.test(ua);
+  const touch = /iPhone|iPad|iPod|Android|Mobile/.test(ua);
   const mod = mac ? "⌘" : "Ctrl+";
   const options = (name: string, label: string, items: [string, string][], selected: string) =>
     `<span class="lbl">${label}</span><select id="${name}" aria-label="${label}">${items.map(([v, l]) => `<option value="${v}"${v === selected ? " selected" : ""}>${l}</option>`).join("")}</select>`;
@@ -1058,7 +1060,7 @@ function composePage(req: Request): Response {
   return page(req, `${head(req, "bin", `<meta name="description" content="Paste text, get a link."><link rel="modulepreload" href="${asset("view.js")}">`, asset("compose.js"))}
 <body class="compose">
 <header class="top wrap"><a class="mark" href="/">bin</a><span class="sp"></span>${THEME_BUTTON}</header>
-<main class="wrap"><textarea id="t" spellcheck="false" autofocus aria-label="Paste" placeholder="Paste to save instantly&#10;${mac ? "⇧⌘V" : "Ctrl+Shift+V"} to edit first"></textarea></main>
+<main class="wrap"><textarea id="t" spellcheck="false" autofocus aria-label="Paste" placeholder="Paste to save instantly&#10;${touch ? "or type, then tap Save" : `${mac ? "⇧⌘V" : "Ctrl+Shift+V"} to edit first`}"></textarea></main>
 <footer class="bar wrap">
 <input id="title" class="field" placeholder="Title" maxlength="200" autocomplete="off" aria-label="Title">
 ${options("lang", "Language", langs, "auto")}
