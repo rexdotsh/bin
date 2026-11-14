@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, readFile, realpath, rename, rm as removeFile, stat
 import { homedir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { StringDecoder } from "node:string_decoder";
 import { parseArgs } from "node:util";
 
 const DEFAULT_URL = "https://bin.rex.wf";
@@ -12,7 +13,9 @@ const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(),
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const DELETES_FILE = path.join(CONFIG_DIR, "deletes.json");
 const MAX_BYTES = 10 * 1024 * 1024;
-const CHUNK = 32 * 1024;
+const CHUNK = 60_000;
+const FLUSH_MS = 1000;
+const HEARTBEAT_MS = 4 * 60_000;
 const ITER = 600_000;
 const isLocal = (host: string) => ["localhost", "127.0.0.1", "[::1]"].includes(host) || host.endsWith(".localhost");
 const common = { url: { type: "string" }, json: { type: "boolean" } } as const;
@@ -34,7 +37,7 @@ Usage:
   bin [file...]                     paste files (several files make one link with a tab each)
   cmd | bin                         paste stdin
   bin run [opts] -- <cmd> [args]    run a command, stream its output to a live paste, exit with its code
-  bin get <id|url> [--digest | --grep <re> [--context n] | --head n | --tail n | --lines a-b | --raw] [--password]
+  bin get <id|url> [--digest | --grep <text> [--context n] | --head n | --tail n | --lines a-b | --raw] [--password]
   bin rm <id|url>                   delete a paste (one you made from this machine, or any with the owner token)
   bin update                        update this CLI (and the skill) from your bin
   bin setup [--token|--rotate]      owner only: save + set the owner token (--token: paste an existing one)
@@ -113,6 +116,7 @@ async function paste(args: string[]) {
   const cfg = await loadConfig(o.url);
   if (o.live) {
     if (positionals.length) throw new Error("--live streams stdin; don't pass files");
+    if (o.password) throw new Error("--live can't be combined with --password (live pastes aren't encrypted)");
     return streamStdin(cfg, o);
   }
   const files: [string, string][] = [];
@@ -151,7 +155,7 @@ async function paste(args: string[]) {
     if (files.length > 1) throw new Error("--password works with one file at a time");
     const password = await readSecret("password: ", "BIN_PASSWORD");
     params.set("enc", "1");
-    if (files[0][0]) params.set("name", files[0][0]);
+    if (o.name) params.set("name", o.name);
     init = { method: "POST", body: encrypt(files[0][1], password), headers: { "content-type": "text/plain; charset=utf-8" } };
   } else if (files.length === 1) {
     if (files[0][0]) params.set("name", files[0][0]);
@@ -173,10 +177,12 @@ async function streamStdin(cfg: Config, o: { title?: string; ttl?: string; lang?
   if (process.stdin.isTTY) throw new Error("--live streams stdin; pipe something in");
   const session = await startLive(cfg, { title: o.title, ttl: o.ttl, lang: o.lang, name: o.name });
   process.stderr.write(`bin: ${session.url} (live)\n`);
+  const decoder = new StringDecoder("utf8");
   for await (const chunk of process.stdin) {
     process.stdout.write(chunk);
-    session.push(chunk.toString());
+    session.push(decoder.write(chunk));
   }
+  session.push(decoder.end());
   await session.close({});
   if (o.json) printJson(session.receipt);
 }
@@ -198,7 +204,7 @@ async function run(args: string[]) {
   const started = Date.now();
   let session: Live | null = null;
   try {
-    session = await startLive(cfg, { title: o.title, ttl: o.ttl, cmd: cmd.map(shellQuote).join(" ") });
+    session = await startLive(cfg, { title: o.title, ttl: o.ttl, cmd: redact(cmd.map(shellQuote).join(" ")) });
     process.stderr.write(`bin: ${session.url} (live)${process.stderr.isTTY && (await copy(session.url)) ? "  (copied)" : ""}\n`);
   } catch (err) {
     process.stderr.write(`bin: couldn't start a live paste (${err instanceof Error ? err.message : err}); running anyway\n`);
@@ -209,13 +215,15 @@ async function run(args: string[]) {
   const ignore = () => {};
   process.on("SIGINT", ignore);
   process.on("SIGTERM", () => child.kill("SIGTERM"));
+  const outDec = new StringDecoder("utf8");
+  const errDec = new StringDecoder("utf8");
   child.stdout.on("data", (d: Buffer) => {
-    process.stdout.write(d);
-    session?.push(d.toString());
+    (o.json ? process.stderr : process.stdout).write(d);
+    session?.push(outDec.write(d));
   });
   child.stderr.on("data", (d: Buffer) => {
     process.stderr.write(d);
-    session?.push(d.toString());
+    session?.push(errDec.write(d));
   });
   const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
     child.on("error", (err: NodeJS.ErrnoException) => {
@@ -226,6 +234,7 @@ async function run(args: string[]) {
     });
     child.on("close", (c, s) => resolve([c, s]));
   });
+  session?.push(outDec.end() + errDec.end());
   process.off("SIGINT", ignore);
   const exit = code ?? (signal ? `${signal}` : "1");
   const dur = Date.now() - started;
@@ -249,51 +258,70 @@ async function startLive(cfg: Config, opts: { title?: string; ttl?: string; lang
   const r = await api<Receipt>(cfg, `/?${params}`, { method: "POST" });
   await remember(r);
   const write = r.write!;
+  const redactLine = makeRedactor();
   let buffer = "";
   let partialSince = 0;
+  let lastSent = Date.now();
   let stopped = false;
   let masked = 0;
   let sending: Promise<void> = Promise.resolve();
+  const post = async (body: string) => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await api(cfg, `/${r.id}/_append`, { method: "POST", body, headers: { "x-write": write } });
+        lastSent = Date.now();
+        return true;
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 413) {
+          stopped = true;
+          process.stderr.write("bin: the live paste hit its size limit; the rest isn't in it\n");
+          return false;
+        }
+        if (attempt >= 3) {
+          stopped = true;
+          process.stderr.write(`bin: lost the live paste (${err instanceof Error ? err.message : err})\n`);
+          return false;
+        }
+        await sleep(500 * attempt);
+      }
+    }
+  };
   const send = (text: string) => {
     sending = sending.then(async () => {
-      if (stopped || !text) return;
-      for (let i = 0; i < text.length; i += CHUNK) {
-        for (let attempt = 1; ; attempt++) {
-          try {
-            await api(cfg, `/${r.id}/_append`, { method: "POST", body: text.slice(i, i + CHUNK), headers: { "x-write": write } });
-            break;
-          } catch (err) {
-            if (err instanceof HttpError && err.status === 413) {
-              stopped = true;
-              process.stderr.write("bin: the live paste hit its size limit; the rest isn't in it\n");
-              return;
-            }
-            if (attempt >= 3) {
-              stopped = true;
-              process.stderr.write(`bin: lost the live paste (${err instanceof Error ? err.message : err})\n`);
-              return;
-            }
-            await sleep(500 * attempt);
-          }
-        }
+      if (stopped) return;
+      if (!text) return void (await post(""));
+      for (let i = 0; i < text.length; ) {
+        let end = Math.min(text.length, i + CHUNK);
+        while (Buffer.byteLength(text.slice(i, end)) > 64 * 1024) end = i + Math.ceil((end - i) / 2);
+        const last = text.charCodeAt(end - 1);
+        if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+        if (!(await post(text.slice(i, end)))) return;
+        i = end;
       }
     });
   };
   const flush = (all: boolean) => {
-    const cut = all ? buffer.length : buffer.lastIndexOf("\n") + 1;
-    if (cut <= 0) return;
-    const out = buffer.slice(0, cut);
-    buffer = buffer.slice(cut);
-    partialSince = buffer ? Date.now() : 0;
-    const clean = redact(out);
-    if (clean !== out) masked++;
-    send(clean);
+    let cut = buffer.lastIndexOf("\n") + 1;
+    if (all) cut = buffer.length;
+    else if (!cut && partialSince && Date.now() - partialSince > FLUSH_MS) cut = Math.max(buffer.lastIndexOf("\r"), buffer.lastIndexOf(" ")) + 1;
+    if (cut > 0) {
+      const out = buffer.slice(0, cut);
+      buffer = buffer.slice(cut);
+      partialSince = buffer ? Date.now() : 0;
+      const clean = redactLine(out);
+      if (clean !== out) masked++;
+      send(clean);
+    } else if (Date.now() - lastSent > HEARTBEAT_MS) {
+      lastSent = Date.now();
+      send("");
+    }
   };
-  const timer = setInterval(() => flush(Boolean(partialSince) && Date.now() - partialSince > 1000), 250);
+  const timer = setInterval(() => flush(false), FLUSH_MS);
   return {
     url: r.url,
     receipt: r,
     push: (s) => {
+      if (!s) return;
       if (!buffer) partialSince = Date.now();
       buffer += s;
       if (buffer.length > CHUNK) flush(false);
@@ -330,7 +358,7 @@ async function get(args: string[]) {
       password: { type: "boolean" },
     },
   });
-  if (positionals.length !== 1) throw new Error("usage: bin get <id|url> [--digest | --grep re | --head n | --tail n | --lines a-b | --raw]");
+  if (positionals.length !== 1) throw new Error("usage: bin get <id|url> [--digest | --grep text | --head n | --tail n | --lines a-b | --raw]");
   const cfg = await loadConfig(o.url);
   const { base, id, file } = locate(cfg, positionals[0]);
   const params = new URLSearchParams();
@@ -405,14 +433,46 @@ async function remember(r: Receipt) {
 
 function findSecrets(text: string): { line: number; kind: string; preview: string }[] {
   const out: { line: number; kind: string; preview: string }[] = [];
+  const starts = [0];
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
+  const lineOf = (pos: number) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= pos) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  };
   for (const [re, kind] of SECRETS) {
     for (const m of text.matchAll(re)) {
-      const line = text.slice(0, m.index).split("\n").length;
+      const line = lineOf(m.index);
       const first = m[0].split("\n")[0];
       out.push({ line, kind, preview: `${first.slice(0, Math.min(8, Math.floor(first.length / 3)))}…` });
     }
   }
   return out.sort((a, b) => a.line - b.line);
+}
+
+function makeRedactor(): (text: string) => string {
+  let inKey = false;
+  return (text) =>
+    text
+      .split("\n")
+      .map((line) => {
+        if (inKey) {
+          if (/-----END [A-Z ]*PRIVATE KEY-----/.test(line)) inKey = false;
+          return line ? "[redacted private key]" : line;
+        }
+        const begin = line.search(/-----BEGIN [A-Z ]*PRIVATE KEY-----/);
+        if (begin !== -1) {
+          inKey = !/-----END [A-Z ]*PRIVATE KEY-----/.test(line.slice(begin));
+          return `${redact(line.slice(0, begin))}[redacted private key]`;
+        }
+        return redact(line);
+      })
+      .join("\n");
 }
 
 function redact(text: string): string {
@@ -442,6 +502,7 @@ function decrypt(envelope: string, password: string): string {
   } catch {
     throw new Error("that paste isn't encrypted");
   }
+  if (!(e.iter >= 100_000 && e.iter <= 5_000_000)) throw new Error("that encrypted paste has an unsupported key setting");
   const ct = Buffer.from(e.ct, "base64");
   const key = pbkdf2Sync(password, Buffer.from(e.salt, "base64"), e.iter, 32, "sha256");
   const d = createDecipheriv("aes-256-gcm", key, Buffer.from(e.iv, "base64"));
@@ -543,9 +604,12 @@ function instanceUrl(raw: string): string {
 async function request(cfg: Config, target: string, init: RequestInit = {}): Promise<Response> {
   let url = new URL(target, `${cfg.url}/`);
   const origin = new URL(cfg.url).origin;
+  const first = url.origin;
   for (let hop = 0; hop < 5; hop++) {
     const headers = new Headers(init.headers);
+    if (url.origin !== first) for (const h of ["x-delete", "x-write"]) headers.delete(h);
     if (url.origin === origin && cfg.token) headers.set("authorization", `Bearer ${cfg.token}`);
+    else headers.delete("authorization");
     let res: Response;
     try {
       res = await fetch(url, { ...init, headers, redirect: "manual" });
@@ -594,7 +658,8 @@ async function readStdin(): Promise<string> {
 
 function commonDir(paths: string[]): string {
   let dir = path.dirname(paths[0]);
-  while (!paths.every((p) => p.startsWith(dir + path.sep))) dir = path.dirname(dir);
+  const prefix = () => (dir.endsWith(path.sep) ? dir : dir + path.sep);
+  while (!paths.every((p) => p.startsWith(prefix())) && path.dirname(dir) !== dir) dir = path.dirname(dir);
   return dir;
 }
 

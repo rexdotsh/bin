@@ -12,7 +12,7 @@ Read
   Browsers get a viewer. Everything else gets plain text, with terminal colours stripped.
   GET /<id>                          the paste
   GET /<id>?head=50  ?tail=50  ?lines=10-80   a slice (add &n=1 to number the lines)
-  GET /<id>?grep=<regex>&context=3   matching lines, like grep -n -C 3
+  GET /<id>?grep=<text>&context=3    matching lines, like grep -n -C 3 (text, | for or, ^ $ anchors, .* wildcard)
   GET /<id>?digest                   a log's errors, warnings, summary and tail, with line numbers
   GET /<id>/<file>                   one file of a multi-file paste (GET /<id> lists them)
   GET /raw/<id>                      the exact bytes;  /dl/<id> downloads them
@@ -26,6 +26,6 @@ Delete
 CLI (Node 20+): curl -fsSL https://bin.rex.wf/install | sh
   bin file.ts          bin a.ts b.ts          cmd | bin
   bin run -- bun test  runs the command, streams its output to a live paste, exits with its code
-  bin get <id> [--digest | --grep <re> | --tail 50]
+  bin get <id> [--digest | --grep <text> | --tail 50]
 
-Limits: 2 MB per anonymous paste, about 20 pastes a minute. Text only; nothing is ever rendered as HTML.
+Limits: 2 MB per anonymous paste (10 files), 5 MB with the owner token, about 20 pastes a minute. Text only; nothing is ever rendered as HTML.

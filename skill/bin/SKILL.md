@@ -28,7 +28,7 @@ Bin links return plain text to non-browsers, so any fetch tool or `curl` works. 
 
 - `curl -sI <url>` shows `x-bin-lines` and `x-bin-tokens` (a rough token count).
 - `bin get <url> --digest` (or `<url>?digest`) summarizes a log: distinct errors with line numbers, repeated warnings, summary lines and the tail.
-- Then fetch only what you need: `--lines 120-180`, `--head 50`, `--tail 50`, `--grep <regex> --context 3` (or the same as query parameters: `?lines=`, `?head=`, `?tail=`, `?grep=&context=`).
+- Then fetch only what you need: `--lines 120-180`, `--head 50`, `--tail 50`, `--grep <text> --context 3` (grep takes plain text, `|` for or, `^`/`$` anchors and `.*` wildcards; case-insensitive unless it has capitals) (or the same as query parameters: `?lines=`, `?head=`, `?tail=`, `?grep=&context=`).
 - A multi-file paste's link lists its files; fetch one with `<url>/<file>`.
 - `<url-a>/vs/<id-b>` gives a unified diff of two pastes.
 - Encrypted pastes need `bin get <url> --password`; ask the user for the password.
