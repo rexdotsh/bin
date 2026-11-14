@@ -16,6 +16,7 @@
   "devDependencies": {
     "@types/node": "^26.6.4",
     "geist": "^1.5.1",
+    "harfbuzzjs": "^1.6.4",
     "highlight.js": "^11.11.1",
     "subset-font": "^2.9.0",
     "typescript": "^7.0.2",
