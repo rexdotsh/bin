@@ -9,7 +9,7 @@ bin: an agent-first pastebin at bin.rex.wf. One Cloudflare Worker, one R2 bucket
 - `cli/bin.ts`: the whole CLI, zero dependencies, Node built-ins only and erasable TypeScript only (runs as-is on Node 22.18+ and Bun; bundled to `dist/cli` for Node 20+).
 - `skill/bin/SKILL.md`: the agent skill. `public/llms.txt`: plain-text usage, also what `GET /` returns to non-browsers.
 - `scripts/import.ts`: one-off import of the old wastebin export (`bin-export*` is gitignored; never commit it, it holds other people's pastes).
-- `wrangler.jsonc`: Worker config. Deployed from the Cloudflare dashboard via GitHub, so it's the source of truth. `dist/` is served as static assets before the Worker (`/cli`, `/install`, `/skill.md`, `/llms.txt`, `/view.js`, `/compose.js`, `/hl.js`, `/bin.css`, `/fonts/*`, `/favicon.svg`).
+- `wrangler.jsonc`: Worker config. Deployed from the Cloudflare dashboard via GitHub, so it's the source of truth. `dist/` is served as static assets before the Worker (`/cli`, `/install`, `/skill.md`, `/llms.txt`, `/bin.css`, `/fonts/*`, `/favicon.svg`, and the browser JS under `/a/`). Browser JS (`view`, `compose`, highlight.js core, languages and `auto`) gets content-hashed names under `/a/` with immutable caching; `dist/assets.json` (not uploaded, see `.assetsignore`) maps `view.js` to `/a/view.<hash>.js` and is bundled into the Worker and the browser code through `asset()` in `src/page.ts`. A stale hashed name (an old cached page after a deploy) gets a 307 to the current file.
 
 ## Commands
 

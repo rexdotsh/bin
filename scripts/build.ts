@@ -23,25 +23,39 @@ async function build(opts: Parameters<typeof Bun.build>[0]) {
   return res;
 }
 
-await $`rm -rf ${out} && mkdir -p ${out}/fonts ${out}/hl`;
+await $`rm -rf ${out} && mkdir -p ${out}/fonts ${out}/a/hl`;
 await $`bun build cli/bin.ts --target=node --outfile=${out}/cli`.quiet();
-await build({ entrypoints: ["web/view.ts", "web/compose.ts"], outdir: out });
 
 const worker = await Bun.file("src/worker.ts").text();
 const langs = [...new Set([...worker.match(/const EXT_LANG[^{]*\{([^}]*)\}/)![1].matchAll(/"([a-z]+)"/g)].map((m) => m[1]))].filter(
   (l) => !["log", "text", "diff"].includes(l),
 );
+const assets: Record<string, string> = {};
+const hashed = async (opts: Parameters<typeof Bun.build>[0], dir: string) => {
+  const res = await build({ ...opts, outdir: `/tmp/bin-build-${process.pid}`, naming: "[name].[ext]" });
+  for (const o of res.outputs) {
+    const code = await o.text();
+    const name = o.path.split("/").pop()!.replace(/\.js$/, "");
+    const file = `${dir}${name}.${new Bun.CryptoHasher("sha256").update(code).digest("hex").slice(0, 8)}.js`;
+    await Bun.write(`${out}/a/${file}`, code);
+    assets[`${dir}${name}.js`] = `/a/${file}`;
+  }
+  await $`rm -rf /tmp/bin-build-${process.pid}`;
+  await Bun.write(`${out}/assets.json`, JSON.stringify(assets));
+};
 const hljs = "node_modules/highlight.js/es";
-await build({ entrypoints: [`${hljs}/core.js`, ...langs.map((l) => `${hljs}/languages/${l}.js`)], outdir: `${out}/hl`, naming: "[name].[ext]" });
-const auto = `/tmp/bin-hl-auto-${process.pid}.js`;
+await hashed({ entrypoints: [`${hljs}/core.js`, ...langs.map((l) => `${hljs}/languages/${l}.js`)] }, "hl/");
+const auto = `/tmp/bin-hl-${process.pid}/auto.js`;
 await Bun.write(
   auto,
   `import hljs from "${process.cwd()}/${hljs}/core.js";\n${langs
     .map((l, i) => `import l${i} from "${process.cwd()}/${hljs}/languages/${l}.js";\nhljs.registerLanguage("${l}", l${i});`)
     .join("\n")}\nexport default hljs;\n`,
 );
-await build({ entrypoints: [auto], outdir: `${out}/hl`, naming: "auto.[ext]" });
-await $`rm -f ${auto}`;
+await hashed({ entrypoints: [auto] }, "hl/");
+await $`rm -rf ${auto.replace(/\/auto\.js$/, "")}`;
+await hashed({ entrypoints: ["web/view.ts"] }, "");
+await hashed({ entrypoints: ["web/compose.ts"] }, "");
 
 let css = await Bun.file("web/bin.css").text();
 for (const [face, file, features] of [
@@ -67,11 +81,14 @@ await Bun.write(`${out}/bin.css`, (await cssOut.outputs[0].text()).replace(/^\/\
 await $`rm -f ${tmpCss}`;
 
 await $`cp skill/bin/SKILL.md ${out}/skill.md && cp cli/install.sh ${out}/install && cp public/* ${out}/`;
-await Bun.write(`${out}/_headers`, "/fonts/*\n  cache-control: public, max-age=31536000, immutable\n");
+await Bun.write(`${out}/_headers`, ["/a/*", "/fonts/*"].map((p) => `${p}\n  cache-control: public, max-age=31536000, immutable\n`).join(""));
+await Bun.write(`${out}/.assetsignore`, "assets.json\n");
 
-const files = (await $`cd ${out} && find . -type f | sort`.text()).trim().split("\n");
-const expected = ["_headers", "bin.css", "cli", "compose.js", "favicon.ico", "favicon.svg", "install", "llms.txt", "robots.txt", "skill.md", "view.js"];
-const unexpected = files.map((f) => f.slice(2)).filter((f) => !expected.includes(f) && !/^fonts\/geist(-mono)?(-ext)?\.[0-9a-f]{8}\.woff2$/.test(f) && !/^hl\/[a-z]+\.js$/.test(f));
-if (unexpected.length || expected.some((f) => !files.includes(`./${f}`)) || files.length !== expected.length + 4 + langs.length + 2) {
+const files = (await $`cd ${out} && find . -type f | sort`.text()).trim().split("\n").map((f) => f.slice(2));
+const expected = [".assetsignore", "_headers", "assets.json", "bin.css", "cli", "favicon.ico", "favicon.svg", "install", "llms.txt", "robots.txt", "skill.md", ...Object.values(assets).map((a) => a.slice(1))];
+const wanted = ["view.js", "compose.js", "hl/core.js", "hl/auto.js", ...langs.map((l) => `hl/${l}.js`)];
+const fonts = files.filter((f) => /^fonts\/geist(-mono)?(-ext)?\.[0-9a-f]{8}\.woff2$/.test(f));
+const unexpected = files.filter((f) => !expected.includes(f) && !fonts.includes(f));
+if (unexpected.length || expected.some((f) => !files.includes(f)) || fonts.length !== 4 || wanted.some((k) => !assets[k]) || Object.keys(assets).length !== wanted.length) {
   throw new Error(`unexpected dist: ${unexpected.join(" ") || files.join(" ")}`);
 }

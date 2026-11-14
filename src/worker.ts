@@ -1,5 +1,5 @@
 import CSS from "../dist/bin.css";
-import { esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
+import { asset, esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -77,6 +77,11 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
   if (m === "PUT" && parts.length === 1) return create(req, env, url, parts[0]);
 
   const [first, ...rest] = parts;
+  if (first === "a") {
+    const current = asset(rest.join("/").replace(/\.[0-9a-f]{8}\.js$/, ".js"));
+    if (!current || current === url.pathname) return notFound(req);
+    return new Response(null, { status: 307, headers: { location: current } });
+  }
   if ((first === "raw" || first === "dl") && rest.length) {
     const idx = rest[0].match(IDX_RE);
     if (!idx || !(m === "GET" || m === "HEAD")) return notFound(req);
@@ -973,7 +978,7 @@ function viewer(
   const og = `${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
 <meta property="og:title" content="${esc(heading || id)}"><meta property="og:description" content="${esc(desc)}">
 <meta property="og:site_name" content="bin"><meta property="og:type" content="article"><meta name="twitter:card" content="summary">${raw ? `<link rel="alternate" type="text/plain" href="${raw}">` : ""}`;
-  return page(req, `${head(req, `${heading || id} · bin`, og, "/view.js")}
+  return page(req, `${head(req, `${heading || id} · bin`, og, asset("view.js"))}
 <body class="${cls}">
 ${html}
 </body></html>`);
@@ -986,7 +991,7 @@ function composePage(req: Request): Response {
     `<span class="lbl">${label}</span><select id="${name}" aria-label="${label}">${items.map(([v, l]) => `<option value="${v}"${v === selected ? " selected" : ""}>${l}</option>`).join("")}</select>`;
   const langs = [["auto", "auto"], ...[...LANGS].sort().map((l) => [l, l])] as [string, string][];
   const secrets = SECRETS.map(([re, kind]) => [re.source, kind]);
-  return page(req, `${head(req, "bin", `<meta name="description" content="Paste text, get a link."><link rel="modulepreload" href="/view.js">`, "/compose.js")}
+  return page(req, `${head(req, "bin", `<meta name="description" content="Paste text, get a link."><link rel="modulepreload" href="${asset("view.js")}">`, asset("compose.js"))}
 <body class="compose">
 <header class="top wrap"><a class="mark" href="/">bin</a><span class="sp"></span>${THEME_BUTTON}</header>
 <main class="wrap"><textarea id="t" spellcheck="false" autofocus aria-label="Paste" placeholder="Paste to save instantly&#10;${mac ? "⇧⌘V" : "Ctrl+Shift+V"} to edit first"></textarea></main>

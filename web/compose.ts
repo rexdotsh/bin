@@ -1,4 +1,4 @@
-import { hlModules, viewBody } from "../src/page";
+import { asset, hlModules, viewBody } from "../src/page";
 import { encrypt } from "./crypto";
 import { plainLine, splitLines } from "./text";
 import "./theme";
@@ -188,7 +188,7 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
       () => toast("saved · link copied"),
       () => toast("saved"),
     )
-    .then(() => requestAnimationFrame(() => setTimeout(() => load("/view.js").catch(() => location.reload()))));
+    .then(() => requestAnimationFrame(() => setTimeout(() => load(asset("view.js")).catch(() => location.reload()))));
 }
 
 function toast(msg: string) {
