@@ -20,9 +20,19 @@ export const LINE_PX = 24;
 const HL_MAX = 300_000;
 const NO_HL = new Set(["log", "text", "diff"]);
 
-export function hlModules(lang: string, size: number): string[] | null {
-  if (size > HL_MAX || NO_HL.has(lang)) return null;
-  if (!lang) return size < 30_000 ? ["/hl/auto.js"] : null;
+const LOG_LINE = /^\s*(?:\[?\d{4}-\d\d-\d\d[T ]|\[?\d\d:\d\d:\d\d|\[?(?:trace|debug|info|warn(?:ing)?|error|fatal)\b)/i;
+
+function looksLikeCode(text: string): boolean {
+  if (text.length < 200 || text.length > 30_000 || /\x1b|\r(?!\n)/.test(text)) return false;
+  const sample = text.slice(0, 4096);
+  const lines = sample.split("\n").filter((l) => l.trim());
+  if (lines.filter((l) => LOG_LINE.test(l)).length * 3 > lines.length) return false;
+  return (sample.match(/[{}()[\];=<>]/g)?.length ?? 0) * 100 > sample.length;
+}
+
+export function hlModules(lang: string, text: string): string[] | null {
+  if (text.length > HL_MAX || NO_HL.has(lang)) return null;
+  if (!lang) return looksLikeCode(text) ? ["/hl/auto.js"] : null;
   return ["/hl/core.js", `/hl/${lang}.js`];
 }
 

@@ -140,9 +140,10 @@ function splitHtml(htmlText: string): string[] {
   return out;
 }
 
-async function highlighted(text: string): Promise<string[] | null> {
-  const mods = hlModules(data.lang, text.length);
+async function highlighted(raw: string): Promise<string[] | null> {
+  const mods = hlModules(data.lang, raw);
   if (!mods) return null;
+  const text = plain.join("\n");
   try {
     const [core, grammar] = await Promise.all(mods.map(load));
     const hljs = core.default as Hljs;
@@ -188,7 +189,7 @@ async function render(raw: string) {
   const lines = splitLines(raw);
   const ansi = raw.includes("\x1b");
   plain = lines.map(plainLine);
-  const hl = ansi ? null : await highlighted(plain.join("\n"));
+  const hl = ansi ? null : await highlighted(raw);
   const st = fresh();
   const out: string[] = [];
   let widest = 0;
