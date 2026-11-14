@@ -59,6 +59,7 @@ There are no automated tests. Verify against `bun run dev` with curl, the CLI an
 - Nothing pasted is ever rendered as HTML. Raw text is `text/plain` with `nosniff` and `content-security-policy: sandbox`; pages have `script-src 'self'`, `style-src 'unsafe-inline'` (inline CSS), `'inline-speculation-rules'` (multi-file tab prefetch) and `frame-ancestors 'none'`. All paste text reaching the DOM goes through `esc()` or highlight.js (which escapes).
 - Theme: dark by default; the `theme=light` cookie (set by the toggle or `t`) makes the server render `data-theme="light"`, so there's no flash. The `wrap=1` cookie works the same way for line wrapping.
 - Successful paste reads (view, raw, dl, slices) are `private, max-age` ≤ 300 (and never past expiry), so back/forward and refetches are free; a delete is seen by new visitors at once and by earlier ones within 5 minutes. Everything else is `private, no-cache`.
+- Phones: `viewport-fit=cover` with `env(safe-area-inset-*)`, heights in `svh` (plain `vh` is the large viewport on iOS, so a 100vh page scrolls), form controls 16px and 44px tall on `(pointer: coarse)` (iOS zooms into smaller inputs; never `maximum-scale`), and `≤640px` layouts (compose Save and status move into the header row). Hover styles go under `(hover: hover)`. Keep desktop pixel-identical when changing these.
 - Every response is `cache-control: ... no-transform` (Cloudflare otherwise injects scripts into HTML), `x-robots-tag: noindex`, `referrer-policy: no-referrer`.
 
 ## Cost (Workers Free)
