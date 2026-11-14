@@ -4,7 +4,6 @@ import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from "node:
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm as removeFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { StringDecoder } from "node:string_decoder";
 import { parseArgs } from "node:util";
 
@@ -13,9 +12,6 @@ const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(),
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const DELETES_FILE = path.join(CONFIG_DIR, "deletes.json");
 const MAX_BYTES = 10 * 1024 * 1024;
-const CHUNK = 60_000;
-const FLUSH_MS = 1000;
-const HEARTBEAT_MS = 4 * 60_000;
 const ITER = 600_000;
 const isLocal = (host: string) => ["localhost", "127.0.0.1", "[::1]"].includes(host) || host.endsWith(".localhost");
 const common = { url: { type: "string" }, json: { type: "boolean" } } as const;
@@ -28,7 +24,6 @@ const pasteOpts = {
   password: { type: "boolean" },
   redact: { type: "boolean" },
   "allow-secrets": { type: "boolean" },
-  live: { type: "boolean" },
 } as const;
 
 const HELP = `bin - paste text to your bin and get a link
@@ -36,7 +31,7 @@ const HELP = `bin - paste text to your bin and get a link
 Usage:
   bin [file...]                     paste files (several files make one link with a tab each)
   cmd | bin                         paste stdin
-  bin run [opts] -- <cmd> [args]    run a command, stream its output to a live paste, exit with its code
+  bin run [opts] -- <cmd> [args]    run a command, paste its output with the exit code, exit with its code
   bin get <id|url> [--digest | --grep <text> [--context n] | --head n | --tail n | --lines a-b | --raw] [--password]
   bin rm <id|url>                   delete a paste (one you made from this machine, or any with the owner token)
   bin update                        update this CLI (and the skill) from your bin
@@ -50,7 +45,6 @@ Paste options:
   --password        encrypt before uploading (asks, or reads $BIN_PASSWORD); the server never sees the text
   --redact          mask anything that looks like a secret instead of refusing
   --allow-secrets   upload even if it looks like it contains secrets
-  --live            stream stdin to a live paste as it arrives
   --json            machine-readable receipt
 
 Every command accepts --url <url>. Precedence: --url, $BIN_URL, config file, ${DEFAULT_URL}.
@@ -64,7 +58,6 @@ type Receipt = {
   url: string;
   raw: string;
   delete?: string;
-  write?: string;
   lines?: number;
   bytes?: number;
   tokens?: number;
@@ -114,11 +107,6 @@ if (first === "help" || first === "--help" || first === "-h" || (!argv.length &&
 async function paste(args: string[]) {
   const { values: o, positionals } = parseArgs({ args, allowPositionals: true, options: pasteOpts });
   const cfg = await loadConfig(o.url);
-  if (o.live) {
-    if (positionals.length) throw new Error("--live streams stdin; don't pass files");
-    if (o.password) throw new Error("--live can't be combined with --password (live pastes aren't encrypted)");
-    return streamStdin(cfg, o);
-  }
   const files: [string, string][] = [];
   if (positionals.length) {
     for (const p of positionals) files.push([path.basename(p), await readTextFile(p)]);
@@ -173,20 +161,6 @@ async function paste(args: string[]) {
   for (const w of r.warnings ?? []) process.stderr.write(`bin: warning: ${w}\n`);
 }
 
-async function streamStdin(cfg: Config, o: { title?: string; ttl?: string; lang?: string; name?: string; json?: boolean }) {
-  if (process.stdin.isTTY) throw new Error("--live streams stdin; pipe something in");
-  const session = await startLive(cfg, { title: o.title, ttl: o.ttl, lang: o.lang, name: o.name });
-  process.stderr.write(`bin: ${session.url} (live)\n`);
-  const decoder = new StringDecoder("utf8");
-  for await (const chunk of process.stdin) {
-    process.stdout.write(chunk);
-    session.push(decoder.write(chunk));
-  }
-  session.push(decoder.end());
-  await session.close({});
-  if (o.json) printJson(session.receipt);
-}
-
 // ---------------------------------------------------------------- run
 
 async function run(args: string[]) {
@@ -202,13 +176,8 @@ async function run(args: string[]) {
   if (!cmd.length) throw new Error("usage: bin run [--title t] [--ttl t] -- <command> [args]");
   const cfg = await loadConfig(o.url);
   const started = Date.now();
-  let session: Live | null = null;
-  try {
-    session = await startLive(cfg, { title: o.title, ttl: o.ttl, cmd: redact(cmd.map(shellQuote).join(" ")) });
-    process.stderr.write(`bin: ${session.url} (live)${process.stderr.isTTY && (await copy(session.url)) ? "  (copied)" : ""}\n`);
-  } catch (err) {
-    process.stderr.write(`bin: couldn't start a live paste (${err instanceof Error ? err.message : err}); running anyway\n`);
-  }
+  const shown = redact(cmd.map(shellQuote).join(" "));
+  const session = collect(cfg, { title: o.title, ttl: o.ttl, cmd: shown });
   const env = { ...process.env };
   if (!env.NO_COLOR && !env.FORCE_COLOR) env.FORCE_COLOR = "1";
   const child = spawn(cmd[0], cmd.slice(1), { stdio: ["inherit", "pipe", "pipe"], env });
@@ -219,125 +188,87 @@ async function run(args: string[]) {
   const errDec = new StringDecoder("utf8");
   child.stdout.on("data", (d: Buffer) => {
     (o.json ? process.stderr : process.stdout).write(d);
-    session?.push(outDec.write(d));
+    session.push(outDec.write(d));
   });
   child.stderr.on("data", (d: Buffer) => {
     process.stderr.write(d);
-    session?.push(errDec.write(d));
+    session.push(errDec.write(d));
   });
   const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
     child.on("error", (err: NodeJS.ErrnoException) => {
       const msg = err.code === "ENOENT" ? `command not found: ${cmd[0]}` : err.message;
       process.stderr.write(`bin: ${msg}\n`);
-      session?.push(`bin: ${msg}\n`);
+      session.push(`bin: ${msg}\n`);
       resolve([127, null]);
     });
     child.on("close", (c, s) => resolve([c, s]));
   });
-  session?.push(outDec.end() + errDec.end());
+  session.push(outDec.end() + errDec.end());
   process.off("SIGINT", ignore);
   const exit = code ?? (signal ? `${signal}` : "1");
   const dur = Date.now() - started;
   process.exitCode = code ?? 128 + (signal === "SIGINT" ? 2 : signal === "SIGTERM" ? 15 : 1);
-  if (!session) return;
   await session.close({ exit, dur });
+  if (!session.receipt) return;
   if (o.json) return printJson({ ...session.receipt, exit, durationMs: dur });
-  process.stderr.write(`bin: exit ${exit} · ${fmtDuration(dur)} · ${session.url}\n`);
+  const link = session.receipt.url;
+  const copied = process.stderr.isTTY && (await copy(link));
+  process.stderr.write(`bin: exit ${exit} · ${fmtDuration(dur)} · ${link}${copied ? "  (copied)" : ""}\n`);
 }
 
-type Live = {
-  url: string;
-  receipt: Receipt;
+type Sink = {
+  receipt: Receipt | null;
   push: (s: string) => void;
   close: (seal: { exit?: string | number; dur?: number }) => Promise<void>;
 };
 
-async function startLive(cfg: Config, opts: { title?: string; ttl?: string; lang?: string; name?: string; cmd?: string }): Promise<Live> {
-  const params = new URLSearchParams({ live: "1" });
-  for (const [k, v] of Object.entries(opts)) if (v) params.set(k, v);
-  const r = await api<Receipt>(cfg, `/?${params}`, { method: "POST" });
-  await remember(r);
-  const write = r.write!;
+function collect(cfg: Config, opts: { title?: string; ttl?: string; cmd: string }): Sink {
+  const limit = (cfg.token ? 5 : 2) * 1024 * 1024 - 4096;
   const redactLine = makeRedactor();
-  let buffer = "";
-  let partialSince = 0;
-  let lastSent = Date.now();
-  let stopped = false;
-  let masked = 0;
-  let sending: Promise<void> = Promise.resolve();
-  const post = async (body: string) => {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await api(cfg, `/${r.id}/_append`, { method: "POST", body, headers: { "x-write": write } });
-        lastSent = Date.now();
-        return true;
-      } catch (err) {
-        if (err instanceof HttpError && err.status === 413) {
-          stopped = true;
-          process.stderr.write("bin: the live paste hit its size limit; the rest isn't in it\n");
-          return false;
-        }
-        if (attempt >= 3) {
-          stopped = true;
-          process.stderr.write(`bin: lost the live paste (${err instanceof Error ? err.message : err})\n`);
-          return false;
-        }
-        await sleep(500 * attempt);
-      }
+  const parts: string[] = [];
+  let pending = "";
+  let size = 0;
+  let cut = 0;
+  const keep = (text: string) => {
+    if (!text) return;
+    parts.push(text);
+    size += Buffer.byteLength(text);
+    while (size > limit && parts.length > 1) {
+      const dropped = parts.shift()!;
+      size -= Buffer.byteLength(dropped);
+      cut += Buffer.byteLength(dropped);
     }
   };
-  const send = (text: string) => {
-    sending = sending.then(async () => {
-      if (stopped) return;
-      if (!text) return void (await post(""));
-      for (let i = 0; i < text.length; ) {
-        let end = Math.min(text.length, i + CHUNK);
-        while (Buffer.byteLength(text.slice(i, end)) > 64 * 1024) end = i + Math.ceil((end - i) / 2);
-        const last = text.charCodeAt(end - 1);
-        if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
-        if (!(await post(text.slice(i, end)))) return;
-        i = end;
-      }
-    });
-  };
-  const flush = (all: boolean) => {
-    let cut = buffer.lastIndexOf("\n") + 1;
-    if (all) cut = buffer.length;
-    else if (!cut && partialSince && Date.now() - partialSince > FLUSH_MS) cut = Math.max(buffer.lastIndexOf("\r"), buffer.lastIndexOf(" ")) + 1;
-    if (cut > 0) {
-      const out = buffer.slice(0, cut);
-      buffer = buffer.slice(cut);
-      partialSince = buffer ? Date.now() : 0;
-      const clean = redactLine(out);
-      if (clean !== out) masked++;
-      send(clean);
-    } else if (Date.now() - lastSent > HEARTBEAT_MS) {
-      lastSent = Date.now();
-      send("");
-    }
-  };
-  const timer = setInterval(() => flush(false), FLUSH_MS);
-  return {
-    url: r.url,
-    receipt: r,
+  const sink: Sink = {
+    receipt: null,
     push: (s) => {
-      if (!s) return;
-      if (!buffer) partialSince = Date.now();
-      buffer += s;
-      if (buffer.length > CHUNK) flush(false);
+      pending += s;
+      const nl = pending.lastIndexOf("\n") + 1;
+      if (!nl) return;
+      keep(redactLine(pending.slice(0, nl)));
+      pending = pending.slice(nl);
     },
     close: async (seal) => {
-      clearInterval(timer);
-      flush(true);
-      await sending;
-      if (masked) process.stderr.write("bin: masked secrets in the output\n");
-      await api(cfg, `/${r.id}/_seal`, {
-        method: "POST",
-        headers: { "x-write": write, "content-type": "application/json" },
-        body: JSON.stringify(seal),
-      }).catch((err) => process.stderr.write(`bin: couldn't seal the paste (${err instanceof Error ? err.message : err}); it seals itself after 10 minutes\n`));
+      keep(redactLine(pending));
+      const params = new URLSearchParams({ lang: "log", cmd: opts.cmd });
+      if (opts.title) params.set("title", opts.title);
+      if (opts.ttl) params.set("ttl", opts.ttl);
+      if (seal.exit !== undefined) params.set("exit", String(seal.exit));
+      if (seal.dur !== undefined) params.set("dur", String(seal.dur));
+      const body = (cut ? `[bin: the first ${fmtSize(cut)} of output were cut to fit the size limit]\n` : "") + (parts.join("") || "(no output)\n");
+      try {
+        sink.receipt = await api<Receipt>(cfg, `/?${params}`, { method: "POST", body, headers: { "content-type": "text/plain; charset=utf-8" } });
+        await remember(sink.receipt);
+      } catch (err) {
+        process.stderr.write(`bin: couldn't upload the output (${err instanceof Error ? err.message : err})\n`);
+      }
     },
   };
+  return sink;
+}
+
+function fmtSize(n: number): string {
+  return n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 }
 
 // ---------------------------------------------------------------- get / rm

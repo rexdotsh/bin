@@ -14,8 +14,13 @@
 
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "bin" }],
 
-  "ratelimits": [{ "name": "ANON", "namespace_id": "2001", "simple": { "limit": 20, "period": 60 } }],
+  "ratelimits": [
+    { "name": "ANON", "namespace_id": "2001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "ANON_BYTES", "namespace_id": "2002", "simple": { "limit": 160, "period": 60 } }
+  ],
 
-  "durable_objects": { "bindings": [{ "name": "LIVE", "class_name": "Live" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Live"] }]
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Live"] },
+    { "tag": "v2", "deleted_classes": ["Live"] }
+  ]
 }

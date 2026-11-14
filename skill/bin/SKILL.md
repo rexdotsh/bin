@@ -11,7 +11,7 @@ description: Share text, logs, code, command output or diffs as a short link wit
 
 - A file: `bin path/to/file.ts`. Several files: `bin a.ts b.ts` (one link, a tab per file).
 - Text you produced: `bin --name notes.md <<'EOF' ... EOF`. The name picks the highlighting.
-- A command's result: `bin run -- <command> [args]`. It runs the command with its normal output, streams that output to a live paste, records the command, exit code and duration, and exits with the command's exit code. Use this instead of pasting a log by hand when sharing a test or build run.
+- A command's result: `bin run -- <command> [args]`. It runs the command with its normal output, then pastes that output with the command, exit code and duration recorded, prints the link, and exits with the command's exit code. Use this instead of pasting a log by hand when sharing a test or build run.
 - Options: `--title "..."`, `--ttl 1h|1d|7d|30d` (default: never expires), `--json` for a machine-readable receipt.
 
 Reply with the link the command prints.
@@ -20,7 +20,7 @@ Reply with the link the command prints.
 
 `bin` refuses to upload text that looks like it contains secrets (API keys, tokens, private keys, `.env` values) and lists what it found. Don't work around this with `--allow-secrets` unless the user explicitly says the content is safe to share. Prefer removing the secret, or `--redact` to mask it. `--password` encrypts the paste (asks for a password, or reads `$BIN_PASSWORD`); only use it if the user wants a password-protected paste, and never put the password in a chat reply unless asked.
 
-`bin run` masks secrets in the output it streams.
+`bin run` masks secrets in the output it uploads.
 
 ## Read a bin link
 

@@ -1,18 +1,16 @@
-import { DurableObject } from "cloudflare:workers";
 import CSS from "../dist/bin.css";
 import { esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
 
 interface Env {
   BUCKET: R2Bucket;
-  LIVE: DurableObjectNamespace<Live>;
   ANON: RateLimit;
+  ANON_BYTES: RateLimit;
   ASSETS: Fetcher;
   BIN_TOKEN?: string;
 }
 
 type Meta = Record<string, string>;
 type FileEntry = { name: string; lang: string; lines: number; bytes: number; tokens: number };
-type Snapshot = { text: string; meta: Meta; n: number };
 
 const ID_RE = /^[A-Za-z0-9+-]{6}$/;
 const IDX_RE = /^([A-Za-z0-9+-]{6})(?:\.([A-Za-z0-9]{1,12}))?$/;
@@ -20,12 +18,8 @@ const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 const ANON_MAX = 2 * 1024 * 1024;
 const OWNER_MAX = 5 * 1024 * 1024;
 const MAX_FILES = 50;
-const MAX_CHUNK = 64 * 1024;
-const MAX_APPENDS = 20_000;
-const SEGMENT_BYTES = 512 * 1024;
 const ANON_FILES = 10;
 const SCAN_MAX = 256 * 1024;
-const LIVE_IDLE_MS = 10 * 60_000;
 const TTL: Record<string, number> = { "1h": 3600, "1d": 86400, "7d": 7 * 86400, "30d": 30 * 86400 };
 const UNFURLERS =
   /Slackbot|Discordbot|Twitterbot|facebookexternalhit|TelegramBot|WhatsApp|LinkedInBot|Mastodon|Signal|Iframely|Embedly|redditbot|SkypeUriPreview|Teams|Google-PageRenderer|Bluesky|Cardyb/i;
@@ -52,159 +46,6 @@ const SECRETS: [RegExp, string][] = [
   [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, "JWT"],
   [/\bAIza[0-9A-Za-z_-]{35}\b/, "Google API key"],
 ];
-
-type LiveCfg = { id: string; meta: Meta; write: string; max: number; etag: string; exp: number };
-type Segment = { t: string; s: number; at: number };
-
-export class Live extends DurableObject<Env> {
-  private cfg: LiveCfg | null = null;
-  private segs: Segment[] = [];
-  private text = "";
-  private size = 0;
-  private last = 0;
-  private appends = 0;
-
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    ctx.blockConcurrencyWhile(async () => {
-      this.cfg = (await ctx.storage.get<LiveCfg>("cfg")) ?? null;
-      if (!this.cfg) return;
-      this.segs = [...(await ctx.storage.list<Segment>({ prefix: "s:" })).values()];
-      this.text = this.segs.map((g) => g.t).join("");
-      this.size = this.segs.reduce((n, g) => n + g.s, 0);
-      this.last = Math.max(0, ...this.segs.map((g) => g.at), (await ctx.storage.get<number>("last")) ?? 0);
-    });
-  }
-
-  async start(cfg: LiveCfg) {
-    await this.ctx.storage.deleteAll();
-    this.cfg = cfg;
-    this.segs = [];
-    this.text = "";
-    this.size = 0;
-    this.appends = 0;
-    this.last = Date.now();
-    await this.ctx.storage.put("cfg", cfg);
-    await this.ctx.storage.setAlarm(this.due());
-  }
-
-  async append(write: string, chunk: string, bytes: number): Promise<number> {
-    const status = await this.check(write);
-    if (status !== 200) return status;
-    const now = Date.now();
-    if (!chunk) {
-      this.last = now;
-      await this.ctx.storage.put("last", now);
-      return 200;
-    }
-    if (this.size + bytes > this.cfg!.max || ++this.appends > MAX_APPENDS) return 413;
-    let tail = this.segs[this.segs.length - 1];
-    if (!tail || tail.s + bytes > SEGMENT_BYTES) this.segs.push((tail = { t: "", s: 0, at: now }));
-    tail.t += chunk;
-    tail.s += bytes;
-    tail.at = now;
-    await this.ctx.storage.put(`s:${String(this.segs.length - 1).padStart(4, "0")}`, tail);
-    this.text += chunk;
-    this.size += bytes;
-    this.last = now;
-    this.broadcast(JSON.stringify({ append: chunk, n: this.text.length }));
-    return 200;
-  }
-
-  async snapshot(): Promise<Snapshot | null> {
-    if (!this.cfg) return null;
-    if (this.expired()) {
-      await this.expire();
-      return null;
-    }
-    return { text: this.text, meta: this.cfg.meta, n: this.text.length };
-  }
-
-  async seal(write: string, extra: Meta): Promise<number> {
-    const status = await this.check(write);
-    if (status === 200) await this.finish(extra);
-    return status;
-  }
-
-  async abort() {
-    this.broadcast(JSON.stringify({ gone: true }), true);
-    await this.reset();
-  }
-
-  async alarm() {
-    if (!this.cfg) return;
-    if (this.expired()) return this.expire();
-    if (Date.now() < this.last + LIVE_IDLE_MS) return this.ctx.storage.setAlarm(this.due());
-    await this.finish({ exit: "interrupted" });
-  }
-
-  async fetch(req: Request): Promise<Response> {
-    if (!this.cfg || this.expired()) return new Response("not live", { status: 404 });
-    const [client, server] = Object.values(new WebSocketPair());
-    this.ctx.acceptWebSocket(server);
-    const from = Number(new URL(req.url).searchParams.get("from")) || 0;
-    if (this.text.length > from) server.send(JSON.stringify({ append: this.text.slice(from), n: this.text.length }));
-    return new Response(null, { status: 101, webSocket: client });
-  }
-
-  async webSocketMessage(ws: WebSocket) {
-    ws.close(1008, "read-only");
-  }
-
-  private async check(write: string): Promise<number> {
-    if (!this.cfg) return 404;
-    if (this.expired()) {
-      await this.expire();
-      return 404;
-    }
-    return (await same(await sha256(write), this.cfg.write)) ? 200 : 403;
-  }
-
-  private due(): number {
-    const idle = this.last + LIVE_IDLE_MS;
-    return this.cfg?.exp ? Math.min(idle, this.cfg.exp) : idle;
-  }
-
-  private expired(): boolean {
-    return Boolean(this.cfg?.exp && Date.now() >= this.cfg.exp);
-  }
-
-  private async expire() {
-    const key = `p/${this.cfg!.id}`;
-    if ((await this.env.BUCKET.head(key))?.etag === this.cfg!.etag) await this.env.BUCKET.delete(key);
-    await this.abort();
-  }
-
-  private broadcast(msg: string, close = false) {
-    for (const ws of this.ctx.getWebSockets()) {
-      try {
-        ws.send(msg);
-        if (close) ws.close(1000, "done");
-      } catch {}
-    }
-  }
-
-  private async reset() {
-    this.cfg = null;
-    this.segs = [];
-    this.text = "";
-    this.size = 0;
-    await this.ctx.storage.deleteAll();
-  }
-
-  private async finish(extra: Meta) {
-    if (!this.cfg) return;
-    const meta: Meta = { ...this.cfg.meta, ...statsOf(this.text, this.size), ...extra };
-    delete meta.kind;
-    await this.env.BUCKET.put(`p/${this.cfg.id}`, this.text, {
-      customMetadata: meta,
-      httpMetadata: { contentType: "text/plain; charset=utf-8" },
-      onlyIf: { etagMatches: this.cfg.etag },
-    });
-    this.broadcast(JSON.stringify({ sealed: true }), true);
-    await this.reset();
-  }
-}
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -246,9 +87,6 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
   if (!idx) return notFound(req);
   const [, id, ext] = idx;
   const sub = rest.join("/");
-  if (sub === "_live") return liveSocket(req, env, id);
-  if (sub === "_append" && m === "POST") return liveAppend(req, env, id);
-  if (sub === "_seal" && m === "POST") return liveSeal(req, env, id);
   if (m === "DELETE" && !sub) return remove(req, env, id);
   if (m !== "GET" && m !== "HEAD") return fail(405, "method not allowed");
   if (rest[0] === "vs" && rest.length === 2) {
@@ -307,28 +145,18 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
     return text(`${link}\n${notes.map((n) => `${n}\n`).join("")}`, 201);
   };
 
-  if (q.get("live") === "1") {
-    const name = cleanName(q.get("name") ?? pathName ?? "");
-    if (name) meta.name = name;
-    meta.lang = pickLang(q.get("lang"), name, "") || "log";
-    meta.kind = "live";
-    const write = token();
-    const placed = await claim(env, id, "", meta);
-    if (!placed) return fail(409, "that id is taken");
-    const exp = meta.exp ? Number(meta.exp) * 1000 : 0;
-    try {
-      await live(env, placed.id).start({ id: placed.id, meta, write: await sha256(write), max, etag: placed.etag, exp });
-    } catch (err) {
-      await env.BUCKET.delete(`p/${placed.id}`);
-      throw err;
-    }
-    return receipt(placed.id, "", { write, live: true });
+  for (const [k, max] of [["exit", 20], ["dur", 12]] as const) {
+    const v = clean(q.get(k), max);
+    if (v) meta[k] = v;
   }
 
   const type = req.headers.get("content-type") ?? "";
   const multipart = type.startsWith("multipart/form-data");
   const raw = await readBounded(req, multipart ? max + 65536 : max);
   if (!raw) return tooBig();
+  if (!owner && !(await env.ANON_BYTES.limit({ key: "all", delta: Math.max(1, Math.ceil(raw.byteLength / 65536)) })).success) {
+    return fail(429, "bin is taking a lot of anonymous pastes right now; try again in a minute", { "retry-after": "60" });
+  }
 
   if (multipart) {
     let form: FormData;
@@ -373,7 +201,7 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       files.map(([name, bytes], i) =>
         env.BUCKET.put(`p/${placed.id}/${name}`, bytes, {
           httpMetadata: { contentType: "text/plain; charset=utf-8" },
-          customMetadata: { lang: entries[i].lang, lines: String(entries[i].lines), tok: String(entries[i].tokens) },
+          customMetadata: { lang: entries[i].lang, ...statsOf(bytes) },
         }),
       ),
     );
@@ -481,45 +309,6 @@ function rateKey(ip: string): string {
 
 const slowDown = () => fail(429, "too many pastes from this address; try again in a minute", { "retry-after": "60" });
 
-// ---------------------------------------------------------------- live
-
-async function liveAppend(req: Request, env: Env, id: string): Promise<Response> {
-  const write = req.headers.get("x-write");
-  if (!write) return fail(401, "missing x-write");
-  const bytes = await readBounded(req, MAX_CHUNK);
-  if (!bytes) return fail(413, `send at most ${MAX_CHUNK / 1024} KB per chunk`);
-  const chunk = decodeText(bytes);
-  if (chunk === null) return fail(415, "chunks must be text");
-  const status = await live(env, id).append(write, chunk, bytes.byteLength);
-  if (status === 200) return json({ ok: true });
-  return fail(status, status === 413 ? "the live paste hit its size limit" : status === 403 ? "wrong write token" : "not live");
-}
-
-async function liveSeal(req: Request, env: Env, id: string): Promise<Response> {
-  const write = req.headers.get("x-write");
-  if (!write) return fail(401, "missing x-write");
-  const raw = await readBounded(req, 1024);
-  if (!raw) return fail(413, "seal bodies are tiny");
-  let body: { exit?: unknown; dur?: unknown } = {};
-  try {
-    body = JSON.parse(new TextDecoder().decode(raw) || "{}");
-  } catch {}
-  const extra: Meta = {};
-  if (typeof body.exit === "number" || typeof body.exit === "string") extra.exit = clean(String(body.exit), 20);
-  if (typeof body.dur === "number" && body.dur >= 0) extra.dur = String(Math.round(body.dur));
-  const status = await live(env, id).seal(write, extra);
-  return status === 200 ? json({ ok: true }) : fail(status, status === 403 ? "wrong write token" : "not live");
-}
-
-async function liveSocket(req: Request, env: Env, id: string): Promise<Response> {
-  if (req.headers.get("upgrade") !== "websocket") return fail(426, "expected a websocket");
-  const origin = req.headers.get("origin");
-  if (origin && origin !== new URL(req.url).origin) return fail(403, "forbidden");
-  return live(env, id).fetch(req);
-}
-
-const live = (env: Env, id: string) => env.LIVE.get(env.LIVE.idFromName(id));
-
 // ---------------------------------------------------------------- read
 
 async function getPaste(env: Env, ctx: ExecutionContext, id: string): Promise<R2ObjectBody | null> {
@@ -567,19 +356,6 @@ async function read(
   }
   if (file) return notFound(req);
 
-  if (meta.kind === "live") {
-    const snap = await live(env, id).snapshot();
-    if (!snap) {
-      const sealed = await getPaste(env, ctx, id);
-      if (!sealed || sealed.customMetadata?.kind === "live") return notFound(req);
-      if (mode !== "view") return rawResponse(sealed.body, sealed.customMetadata ?? {}, id, mode);
-      return present(req, url, id, ext, sealed.customMetadata ?? {}, await sealed.text());
-    }
-    const liveMeta = { ...snap.meta, ...statsOf(snap.text) };
-    if (mode !== "view") return rawResponse(snap.text, liveMeta, id, mode);
-    return present(req, url, id, ext, liveMeta, snap.text, { live: snap.n });
-  }
-
   if (mode !== "view") return rawResponse(obj.body, meta, id, mode);
   if (streamable(req, url, meta)) return agentStream(obj.body, meta);
   return present(req, url, id, ext, meta, await viewText(req, url, meta, obj));
@@ -618,13 +394,12 @@ function present(
   ext: string | undefined,
   meta: Meta,
   body: string,
-  extra: { files?: FileEntry[]; file?: string; live?: number; diff?: string } = {},
+  extra: { files?: FileEntry[]; file?: string; diff?: string } = {},
 ): Response {
   const q = url.searchParams;
   const sliced = slicing(url);
   if (!sliced && wantsHtml(req)) return viewer(req, url, id, ext, meta, body, extra);
   const headers = agentHeaders(meta);
-  if (extra.live !== undefined) headers.set("x-bin-live", "1");
   if (meta.enc === "1") {
     headers.set("x-bin-encrypted", "1");
     if (sliced) return fail(400, "this paste is encrypted; read it with `bin get <url> --password`");
@@ -807,7 +582,6 @@ async function remove(req: Request, env: Env, id: string): Promise<Response> {
 }
 
 async function purge(env: Env, id: string, meta: Meta) {
-  if (meta.kind === "live") await live(env, id).abort();
   if (meta.kind === "multi") {
     const index = await env.BUCKET.get(`p/${id}`);
     const files = index ? ((await index.json()) as { files: FileEntry[] }).files : [];
@@ -1106,7 +880,7 @@ function viewer(
   ext: string | undefined,
   meta: Meta,
   body: string,
-  extra: { files?: FileEntry[]; file?: string; live?: number; diff?: string },
+  extra: { files?: FileEntry[]; file?: string; diff?: string },
 ): Response {
   const enc = meta.enc === "1";
   const inline = enc || Number(meta.bytes || body.length) <= INLINE_MAX;
