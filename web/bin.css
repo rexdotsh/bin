@@ -3,12 +3,19 @@
 @font-face { font-family: "Geist Mono"; src: url("/fonts/geist-mono.woff2") format("woff2"); font-weight: 400 600; font-display: optional; }
 @font-face { font-family: "Geist Mono"; src: url("/fonts/geist-mono-ext.woff2") format("woff2"); font-weight: 400 600; font-display: optional; }
 
+@font-face { font-family: "Geist Fallback"; src: local("Arial"), local("ArialMT"), local("Arimo"), local("LiberationSans"); size-adjust: 104.7553%; ascent-override: 95.9365%; descent-override: 28.1609%; line-gap-override: 0%; }
+@font-face { font-family: "Geist Fallback"; font-weight: 600; src: local("Arial Bold"), local("Arial-BoldMT"), local("Arimo-Bold"), local("LiberationSans-Bold"); size-adjust: 104.7553%; ascent-override: 95.9365%; descent-override: 28.1609%; line-gap-override: 0%; }
+@font-face { font-family: "Geist Mono Fallback"; src: local("Menlo-Regular"), local("DejaVuSansMono"); size-adjust: 99.6593%; ascent-override: 100.8436%; descent-override: 29.6009%; line-gap-override: 0%; }
+@font-face { font-family: "Geist Mono Fallback"; font-weight: 600; src: local("Menlo-Bold"), local("DejaVuSansMono-Bold"); size-adjust: 99.6593%; ascent-override: 100.8436%; descent-override: 29.6009%; line-gap-override: 0%; }
+@font-face { font-family: "Geist Mono Fallback Consolas"; src: local("Consolas"); size-adjust: 109.1296%; ascent-override: 92.0924%; descent-override: 27.0321%; line-gap-override: 0%; }
+@font-face { font-family: "Geist Mono Fallback Consolas"; font-weight: 600; src: local("Consolas Bold"), local("Consolas-Bold"); size-adjust: 109.1296%; ascent-override: 92.0924%; descent-override: 27.0321%; line-gap-override: 0%; }
+
 :root {
   color-scheme: dark;
   --bg: #0a0a0a; --fg: #e8e8e6; --mute: #5c5c5a; --mute2: #8a8a88; --soft: #151515; --line: #1c1c1c; --edge: #262626; --gut: #3a3a39;
   --sel: #161616; --hit: #2b2611; --red: #f08a7e; --green: #8fbf9a; --blue: #8fb3e0; --violet: #b9a3e6; --amber: #e0b860; --cyan: #67c4d6;
   --add: #0f1a12; --del: #1e1110; --hunk: #10141c; --shadow: rgba(0, 0, 0, 0.5);
-  --sans: "Geist", ui-sans-serif, system-ui, sans-serif; --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif; --mono: "Geist Mono", "Geist Mono Fallback", "Geist Mono Fallback Consolas", ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   scrollbar-gutter: stable;
 }
 :root[data-theme="light"] {
