@@ -1,4 +1,4 @@
-import { viewBody } from "../src/page";
+import { hlModules, viewBody } from "../src/page";
 import { encrypt } from "./crypto";
 import { plainLine, splitLines } from "./text";
 import "./theme";
@@ -83,6 +83,16 @@ function copier(): (url: string | null) => Promise<unknown> {
   };
 }
 
+function preload(paths: string[]) {
+  for (const href of paths) {
+    if (document.querySelector(`link[href="${href}"]`)) continue;
+    const link = document.createElement("link");
+    link.rel = "modulepreload";
+    link.href = href;
+    document.head.append(link);
+  }
+}
+
 async function save(text = t.value) {
   if (busy) return;
   if (!text) return say("nothing to save");
@@ -110,6 +120,7 @@ async function save(text = t.value) {
     t.readOnly = true;
   }
   const copy = copier();
+  if (!enc && (lang.value !== "auto" || !name)) preload(hlModules(lang.value === "auto" ? "" : lang.value, text) ?? []);
   let r: Receipt;
   try {
     const params = new URLSearchParams();

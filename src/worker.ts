@@ -919,7 +919,7 @@ function composePage(req: Request): Response {
     `<span class="lbl">${label}</span><select id="${name}" aria-label="${label}">${items.map(([v, l]) => `<option value="${v}"${v === selected ? " selected" : ""}>${l}</option>`).join("")}</select>`;
   const langs = [["auto", "auto"], ...[...LANGS].sort().map((l) => [l, l])] as [string, string][];
   const secrets = SECRETS.map(([re, kind]) => [re.source, kind]);
-  return page(req, `${head(req, "bin", `<meta name="description" content="Paste text, get a link.">`, "/compose.js")}
+  return page(req, `${head(req, "bin", `<meta name="description" content="Paste text, get a link."><link rel="modulepreload" href="/view.js">`, "/compose.js")}
 <body class="compose">
 <header class="top wrap"><a class="mark" href="/">bin</a><span class="sp"></span>${THEME_BUTTON}</header>
 <main class="wrap"><textarea id="t" spellcheck="false" autofocus aria-label="Paste" placeholder="Paste to save instantly&#10;${mac ? "⇧⌘V" : "Ctrl+Shift+V"} to edit first"></textarea></main>
