@@ -1,7 +1,9 @@
-import { gutter, hlModules } from "../src/page";
+import { asset, gutter, hlModules, lineCount } from "../src/page";
+import { highlight } from "./hl";
 import { decrypt } from "./crypto";
-import { plainLine, segments, splitLines } from "./text";
+import { ANSI_RE, dropStray, SGR_RE, stripAnsi, toLines, visible } from "../src/text";
 import { toggleTheme } from "./theme";
+import { setCookie, store, stored, toast } from "./ui";
 
 type Data = {
   id: string;
@@ -16,18 +18,14 @@ type Data = {
   dl: string | null;
 };
 
-type Hljs = {
-  registerLanguage(name: string, lang: unknown): void;
-  highlight(code: string, opts: { language: string; ignoreIllegals: boolean }): { value: string };
-  highlightAuto(code: string): { value: string; relevance: number };
-};
-
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const data = JSON.parse($("data").textContent!) as Data;
 const pre = $<HTMLPreElement>("text");
 const BLOCK = 256;
 const CV_MIN = 1000;
 const HITS_MAX = 5000;
+const HL_INLINE = 50_000;
+const MARGIN = 1500;
 
 let plain: string[] = [];
 let count = 0;
@@ -37,7 +35,6 @@ let anchor = 0;
 
 const esc = (s: string) => s.split("&").join("&amp;").split("<").join("&lt;");
 const line = (n: number) => pre.children[(n - 1) >> 8]?.children[(n - 1) & (BLOCK - 1)] as HTMLElement | undefined;
-const load = (path: string) => import(path);
 
 // ---------------------------------------------------------------- ANSI
 
@@ -110,60 +107,49 @@ function span(st: Style, s: string): string {
   return `<span${cls.length ? ` class="${cls.join(" ")}"` : ""}${css.length ? ` style="${css.join(";")}"` : ""}>${esc(s)}</span>`;
 }
 
-const TOKEN = /\x1b\[([0-9;:?]*)([ -/]*[@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]?|([^\x1b]+)/g;
+const TOKEN = new RegExp(`(${ANSI_RE.source})|([^\\x1b]+)`, "g");
 
-function ansiLine(st: Style, text: string): string {
-  const parts = segments(text);
-  let out = "";
-  parts.forEach((seg, idx) => {
-    const keep = idx === parts.length - 1;
-    for (const m of seg.matchAll(TOKEN)) {
-      if (m[3] !== undefined) {
-        if (keep) out += span(st, m[3]);
-      } else if (m[2] === "m") sgr(st, m[1]);
+function ansiLine(st: Style, raw: string, newline: boolean): string {
+  const pieces: [Style, number, string][] = [];
+  let text = "";
+  for (const m of raw.matchAll(TOKEN)) {
+    if (m[2] !== undefined) {
+      pieces.push([{ ...st }, text.length, m[2]]);
+      text += m[2];
+    } else {
+      const sg = SGR_RE.exec(m[1]);
+      if (sg) sgr(st, sg[1]);
     }
-  });
+  }
+  const [from, to] = visible(text, newline);
+  let out = "";
+  for (const [style, at, piece] of pieces) {
+    if (at + piece.length > from && at < to) out += span(style, dropStray(piece.slice(Math.max(0, from - at), to - at)));
+  }
   return out;
 }
 
 // ---------------------------------------------------------------- highlight.js
 
-function splitHtml(htmlText: string): string[] {
-  const out: string[] = [];
-  const open: string[] = [];
-  let cur = "";
-  for (const m of htmlText.matchAll(/(<span[^>]*>)|(<\/span>)|(\n)|([^<\n]+)/g)) {
-    if (m[1]) {
-      open.push(m[1]);
-      cur += m[1];
-    } else if (m[2]) {
-      open.pop();
-      cur += m[2];
-    } else if (m[3]) {
-      out.push(cur + "</span>".repeat(open.length));
-      cur = open.join("");
-    } else cur += m[4];
-  }
-  out.push(cur);
-  return out;
-}
-
-async function highlighted(raw: string): Promise<string[] | null> {
-  const mods = data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
-  if (!mods) return null;
-  const text = plain.join("\n");
-  try {
-    const [core, grammar] = await Promise.all(mods.map(load));
-    const hljs = core.default as Hljs;
-    if (grammar) {
-      hljs.registerLanguage(data.lang, grammar.default);
-      return splitHtml(hljs.highlight(text, { language: data.lang, ignoreIllegals: true }).value);
+function highlighted(mods: string[], text: string): Promise<string[] | null> {
+  const inPage = () => highlight(mods, data.lang, text);
+  return new Promise((resolve) => {
+    let w: Worker;
+    try {
+      w = new Worker(asset("hl-worker.js"), { type: "module" });
+    } catch {
+      return resolve(inPage());
     }
-    const auto = hljs.highlightAuto(text);
-    return auto.relevance < 10 ? null : splitHtml(auto.value);
-  } catch {
-    return null;
-  }
+    w.onmessage = (e: MessageEvent<string[] | null>) => {
+      w.terminate();
+      resolve(e.data);
+    };
+    w.onerror = () => {
+      w.terminate();
+      resolve(inPage());
+    };
+    w.postMessage({ mods, lang: data.lang, text });
+  });
 }
 
 // ---------------------------------------------------------------- rows
@@ -179,7 +165,7 @@ function rowClass(stripped: string): string {
 
 const row = (stripped: string, inner: string) => `<span class="${rowClass(stripped)}">${inner}</span>`;
 const block = (start: number, rows: string, size: number) =>
-  `<div class="b" style="counter-reset:n ${start}${size < BLOCK ? `;contain-intrinsic-block-size:auto ${size * 24}px` : ""}">${rows}</div>`;
+  `<div class="b" style="counter-reset:n ${start}${size < BLOCK ? `;contain-intrinsic-block-size:${size * 24}px` : ""}">${rows}</div>`;
 
 function columns(s: string): number {
   if (!/[\t\u1100-\uffff]/.test(s)) return s.length;
@@ -193,36 +179,111 @@ function columns(s: string): number {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-async function render(raw: string) {
-  const lines = splitLines(raw);
-  const ansi = raw.includes("\x1b");
-  plain = lines.map(plainLine);
-  const hl = ansi ? null : await highlighted(raw);
+let lines: string[] = [];
+let ansi = false;
+let hlRows: string[] | null = null;
+let starts: Style[] = [];
+let painted: boolean[] = [];
+let io: IntersectionObserver | null = null;
+
+function scan(st: Style, text: string) {
+  for (const m of text.matchAll(ANSI_RE)) {
+    const sg = SGR_RE.exec(m[0]);
+    if (sg) sgr(st, sg[1]);
+  }
+}
+
+function paint(i: number) {
+  const b = pre.children[i] as HTMLElement | undefined;
+  if (!b) return;
+  const lo = i * BLOCK;
+  const hi = Math.min(count, lo + BLOCK);
+  const st = ansi ? { ...starts[i] } : fresh();
+  let rows = "";
+  for (let k = lo; k < hi; k++) rows += row(plain[k], ansi ? ansiLine(st, lines[k], k < count - 1 || eol) : hlRows ? (hlRows[k] ?? esc(plain[k])) : esc(plain[k]));
+  b.innerHTML = rows;
+  painted[i] = true;
+  io?.unobserve(b);
+  if (sel && sel[0] <= hi && sel[1] > lo) mark(Math.max(lo + 1, sel[0]), Math.min(hi, sel[1]), "sel", true);
+  for (const n of hits.slice(0, HITS_MAX)) if (n > lo && n <= hi) line(n)?.classList.add("hit");
+}
+
+function rewrap() {
+  const on = document.body.classList.toggle("wrap-on");
+  setCookie("wrap", on ? "1" : "0");
+  if (!io) return;
+  painted.forEach((done, i) => {
+    const b = pre.children[i] as HTMLElement;
+    const r = b.getBoundingClientRect();
+    if (!done || (r.bottom > -MARGIN && r.top < innerHeight + MARGIN)) return;
+    b.textContent = plain.slice(i * BLOCK, (i + 1) * BLOCK).join("\n");
+    painted[i] = false;
+    io!.observe(b);
+  });
+}
+
+function reveal(n: number) {
+  const i = (n - 1) >> 8;
+  if (!painted[i]) paint(i);
+  line(n)?.scrollIntoView({ block: "center" });
+}
+
+async function fill() {
   const st = fresh();
   const out: string[] = [];
+  const lazy = count > CV_MIN;
   let widest = 0;
   let t = performance.now();
-  for (let i = 0; i < lines.length; i += BLOCK) {
-    const end = Math.min(lines.length, i + BLOCK);
-    let rows = "";
-    for (let k = i; k < end; k++) {
-      rows += row(plain[k], ansi ? ansiLine(st, lines[k]) : hl ? (hl[k] ?? esc(plain[k])) : esc(plain[k]));
-      widest = Math.max(widest, columns(plain[k]));
+  starts = [];
+  for (let i = 0; i < count; i += BLOCK) {
+    const end = Math.min(count, i + BLOCK);
+    if (ansi) {
+      starts.push({ ...st });
+      for (let k = i; k < end; k++) scan(st, lines[k]);
     }
-    out.push(block(i, rows, end - i));
+    for (let k = i; k < end; k++) widest = Math.max(widest, columns(plain[k]));
+    out.push(block(i, lazy ? esc(plain.slice(i, end).join("\n")) : "", end - i));
     if (performance.now() - t > 30) {
       await tick();
       t = performance.now();
     }
   }
-  if (lines.length > CV_MIN) {
+  if (lazy) {
     pre.style.setProperty("--cw", `${widest}ch`);
     pre.classList.add("cv");
   }
+  io?.disconnect();
   pre.innerHTML = out.join("");
+  painted = [];
+  if (!lazy) {
+    for (let i = 0; i * BLOCK < count; i++) paint(i);
+    return;
+  }
+  for (let i = 0; i * BLOCK < count && i * BLOCK * 24 < innerHeight + MARGIN; i++) paint(i);
+  const blocks = [...pre.children];
+  io = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) if (e.isIntersecting) paint(blocks.indexOf(e.target));
+    },
+    { rootMargin: `${MARGIN}px 0px` },
+  );
+  blocks.forEach((b, i) => painted[i] || io!.observe(b));
+}
+
+async function render(raw: string) {
+  ({ raw: lines, plain, eol } = toLines(raw));
+  ansi = raw.includes("\x1b");
   count = lines.length;
-  eol = raw.endsWith("\n");
+  const mods = ansi ? null : data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
+  const text = mods ? plain.join("\n") : "";
+  if (mods && mods.length > 1 && text.length < HL_INLINE) hlRows = await highlight(mods, data.lang, text);
+  const colored = mods && !hlRows ? highlighted(mods, text) : null;
+  await fill();
   fromHash();
+  const hl = await colored;
+  if (!hl) return;
+  hlRows = hl;
+  painted.forEach((on, i) => on && paint(i));
 }
 
 // ---------------------------------------------------------------- selection
@@ -247,7 +308,7 @@ function fromHash() {
   if (!m) return;
   anchor = Number(m[1]);
   select(anchor, Number(m[2] ?? m[1]));
-  if (sel) line(sel[0])?.scrollIntoView({ block: "center" });
+  if (sel) reveal(sel[0]);
 }
 
 addEventListener("hashchange", fromHash);
@@ -269,20 +330,6 @@ pre.addEventListener("click", (e) => {
 
 // ---------------------------------------------------------------- actions
 
-function toast(msg: string) {
-  let t = document.querySelector<HTMLDivElement>(".toast");
-  if (!t) {
-    t = document.createElement("div");
-    t.className = "toast";
-    t.setAttribute("role", "status");
-    document.body.append(t);
-  }
-  t.textContent = msg;
-  t.classList.add("on");
-  clearTimeout(Number(t.dataset.timer));
-  t.dataset.timer = String(setTimeout(() => t!.classList.remove("on"), 1400));
-}
-
 const textOf = (a: number, b: number) => plain.slice(a - 1, b).join("\n") + (b >= a && (b < count || eol) ? "\n" : "");
 
 async function copy() {
@@ -297,7 +344,7 @@ async function copy() {
 $("copy").addEventListener("click", copy);
 
 const delKey = `bin:del:${data.id}`;
-const delToken = localStorage.getItem(delKey);
+const delToken = stored("localStorage", delKey);
 if (delToken && !data.diff) {
   const del = $<HTMLButtonElement>("del");
   del.hidden = false;
@@ -305,7 +352,7 @@ if (delToken && !data.diff) {
     if (!confirm("Delete this paste for everyone?")) return;
     const res = await fetch(`/${data.id}`, { method: "DELETE", headers: { "x-delete": delToken } });
     if (res.ok || res.status === 404) {
-      localStorage.removeItem(delKey);
+      store("localStorage", delKey, null);
       location.href = "/";
     } else toast("couldn't delete");
   });
@@ -360,19 +407,15 @@ q.addEventListener("keydown", (e) => {
     if (n >= 1 && n <= count) {
       anchor = n;
       select(n, n);
-      line(n)?.scrollIntoView({ block: "center" });
+      reveal(n);
     }
     return closeBox();
   }
   if (!hits.length) return;
   hitAt = (hitAt + (e.shiftKey ? -1 : 1) + hits.length) % hits.length;
-  line(hits[hitAt])?.scrollIntoView({ block: "center" });
+  reveal(hits[hitAt]);
   $("count").textContent = `${hitAt + 1}/${hits.length}`;
 });
-
-function setCookie(name: string, value: string) {
-  document.cookie = `${name}=${value}; Path=/; Max-Age=31536000; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
-}
 
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -382,17 +425,13 @@ document.addEventListener("keydown", (e) => {
     y: copy,
     r: () => go(data.raw),
     d: () => go(data.dl),
-    w: () => setCookie("wrap", document.body.classList.toggle("wrap-on") ? "1" : "0"),
+    w: rewrap,
     t: toggleTheme,
     "/": () => openBox("find"),
     g: () => openBox("line"),
     e: () => {
-      try {
-        sessionStorage.setItem("bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }));
-        location.href = "/";
-      } catch {
-        toast("too big to edit here");
-      }
+      if (store("sessionStorage", "bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }))) location.href = "/";
+      else toast("couldn't open this in the editor");
     },
     Escape: () => (findBox.hidden ? select(0, -1) : closeBox()),
   };
@@ -409,19 +448,25 @@ if (data.enc) {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const pw = $<HTMLInputElement>("pw");
+    const btn = form.querySelector("button")!;
+    if (btn.disabled) return;
+    btn.disabled = true;
+    $("pwerr").hidden = true;
+    let text: string;
     try {
-      const text = await decrypt(data.enc!, pw.value);
-      const n = splitLines(text).length;
-      form.remove();
-      document.querySelector(".meta")!.insertAdjacentHTML("beforeend", `<span>${n.toLocaleString("en")} lines</span>`);
-      pre.style.setProperty("--gw", gutter(n));
-      pre.textContent = splitLines(text).map(plainLine).join("\n");
-      pre.hidden = false;
-      await render(text);
+      text = await decrypt(data.enc!, pw.value);
     } catch {
+      btn.disabled = false;
       $("pwerr").hidden = false;
-      pw.select();
+      return pw.select();
     }
+    const n = toLines(text).plain.length;
+    form.remove();
+    document.querySelector(".meta")!.insertAdjacentHTML("beforeend", lineCount(n));
+    pre.style.setProperty("--gw", gutter(n));
+    pre.textContent = stripAnsi(text);
+    pre.hidden = false;
+    await render(text);
   });
 } else {
   const source = data.src

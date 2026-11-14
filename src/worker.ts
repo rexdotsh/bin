@@ -1,5 +1,5 @@
 import CSS from "../dist/bin.css";
-import { esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
+import { asset, esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -77,6 +77,11 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
   if (m === "PUT" && parts.length === 1) return create(req, env, url, parts[0]);
 
   const [first, ...rest] = parts;
+  if (first === "a") {
+    const current = asset(rest.join("/").replace(/\.[0-9a-f]{8}\.js$/, ".js"));
+    if (!current || current === url.pathname) return notFound(req);
+    return new Response(null, { status: 307, headers: { location: current } });
+  }
   if ((first === "raw" || first === "dl") && rest.length) {
     const idx = rest[0].match(IDX_RE);
     if (!idx || !(m === "GET" || m === "HEAD")) return notFound(req);
@@ -377,11 +382,18 @@ async function readPaste(
       return new Response(null, { headers });
     }
   }
+  const early = file ? env.BUCKET.get(`p/${id}/${file}`) : null;
+  early?.catch(() => {});
+  const drop = () => early && ctx.waitUntil(early.then((p) => p?.body.cancel(), () => {}));
   const obj = await getPaste(env, ctx, id);
-  if (!obj) return notFound(req);
+  if (!obj) {
+    drop();
+    return notFound(req);
+  }
   const meta = obj.customMetadata ?? {};
+  if (meta.kind !== "multi") drop();
   const left = meta.exp ? Number(meta.exp) - Math.floor(Date.now() / 1000) : Infinity;
-  const res = await readBody(req, env, url, id, ext, file, mode, obj, meta);
+  const res = await readBody(req, env, url, id, ext, file, mode, obj, meta, early);
   if (res.status === 200 && left > 0) res.headers.set("x-max-age", String(Math.min(300, left)));
   return res;
 }
@@ -396,6 +408,7 @@ async function readBody(
   mode: "view" | "raw" | "dl",
   obj: R2ObjectBody,
   meta: Meta,
+  early: Promise<R2ObjectBody | null> | null,
 ): Promise<Response> {
   if (meta.kind === "multi") {
     const index = JSON.parse(await obj.text()) as { files: FileEntry[] };
@@ -404,8 +417,11 @@ async function readBody(
       file = index.files[0].name;
     }
     const entry = index.files.find((f) => f.name === file);
-    const part = entry && (await env.BUCKET.get(`p/${id}/${file}`));
-    if (!entry || !part) return notFound(req);
+    const part = await (early ?? (entry ? env.BUCKET.get(`p/${id}/${file}`) : null));
+    if (!entry || !part) {
+      await part?.body.cancel();
+      return notFound(req);
+    }
     const fileMeta: Meta = { ...meta, ...(part.customMetadata ?? {}), name: file, lang: entry.lang, lines: String(entry.lines), bytes: String(entry.bytes), tok: String(entry.tokens) };
     delete fileMeta.kind;
     if (mode !== "view") return rawResponse(part.body, fileMeta, id, mode);
@@ -1027,14 +1043,19 @@ function viewer(
   });
   const desc = inline ? preview(body, meta) : `${Number(meta.lines || 0).toLocaleString("en")} lines`;
   const raw = extra.diff ? "" : `/raw/${id}${extra.file ? `/${segments(extra.file)}` : ""}`;
-  const og = `${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
+  const tabs = extra.files ? `<script type="speculationrules">${TAB_RULES}</script>` : "";
+  const src = inline || !raw ? "" : `<link rel="preload" href="${raw}" as="fetch" crossorigin>`;
+  const og = `${tabs}${src}${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
 <meta property="og:title" content="${esc(heading || id)}"><meta property="og:description" content="${esc(desc)}">
 <meta property="og:site_name" content="bin"><meta property="og:type" content="article"><meta name="twitter:card" content="summary">${raw ? `<link rel="alternate" type="text/plain" href="${raw}">` : ""}`;
-  return page(req, `${head(req, `${heading || id} · bin`, og, "/view.js")}
+  return page(req, `${head(req, `${heading || id} · bin`, og, asset("view.js"))}
 <body class="${cls}">
 ${html}
 </body></html>`);
 }
+
+const TAB_RULE = { source: "document", where: { selector_matches: ".tabs a" }, eagerness: "moderate" };
+const TAB_RULES = JSON.stringify({ prefetch: [TAB_RULE], prerender: [TAB_RULE] });
 
 function composePage(req: Request): Response {
   const mac = /Macintosh|iPhone|iPad/.test(req.headers.get("user-agent") ?? "");
@@ -1043,7 +1064,7 @@ function composePage(req: Request): Response {
     `<span class="lbl">${label}</span><select id="${name}" aria-label="${label}">${items.map(([v, l]) => `<option value="${v}"${v === selected ? " selected" : ""}>${l}</option>`).join("")}</select>`;
   const langs = [["auto", "auto"], ...[...LANGS].sort().map((l) => [l, l])] as [string, string][];
   const secrets = SECRETS.map(([re, kind]) => [re.source, kind]);
-  return page(req, `${head(req, "bin", `<meta name="description" content="Paste text, get a link."><link rel="modulepreload" href="/view.js">`, "/compose.js")}
+  return page(req, `${head(req, "bin", `<meta name="description" content="Paste text, get a link."><link rel="modulepreload" href="${asset("view.js")}">`, asset("compose.js"))}
 <body class="compose">
 <header class="top wrap"><a class="mark" href="/">bin</a><span class="sp"></span>${THEME_BUTTON}</header>
 <main class="wrap"><textarea id="t" spellcheck="false" autofocus aria-label="Paste" placeholder="Paste to save instantly&#10;${mac ? "⇧⌘V" : "Ctrl+Shift+V"} to edit first"></textarea></main>
@@ -1117,7 +1138,7 @@ function harden(res: Response): Response {
   if ((h.get("content-type") ?? "").startsWith("text/html")) {
     h.set(
       "content-security-policy",
-      "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'self' 'inline-speculation-rules'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     );
     h.set("x-frame-options", "DENY");
   } else h.set("content-security-policy", "sandbox; default-src 'none'");

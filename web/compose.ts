@@ -1,7 +1,8 @@
-import { hlModules, viewBody } from "../src/page";
+import { asset, hlModules, viewBody } from "../src/page";
 import { encrypt } from "./crypto";
-import { plainLine, splitLines } from "./text";
+import { stripAnsi, toLines } from "../src/text";
 import "./theme";
+import { cookie, store, stored, toast } from "./ui";
 
 type Receipt = {
   ok: boolean;
@@ -36,14 +37,16 @@ let holdPaste = false;
 let busy = false;
 let warned = false;
 
-const draft = sessionStorage.getItem("bin:draft");
+const draft = stored("sessionStorage", "bin:draft");
 if (draft) {
-  sessionStorage.removeItem("bin:draft");
-  const d = JSON.parse(draft) as { text: string; name?: string; lang?: string };
-  t.value = d.text;
-  name = d.name ?? "";
-  if (name) title.placeholder = name;
-  if (d.lang && [...lang.options].some((o) => o.value === d.lang)) lang.value = d.lang;
+  store("sessionStorage", "bin:draft", null);
+  try {
+    const d = JSON.parse(draft) as { text: string; name?: string; lang?: string };
+    t.value = d.text;
+    name = d.name ?? "";
+    if (name) title.placeholder = name;
+    if (d.lang && [...lang.options].some((o) => o.value === d.lang)) lang.value = d.lang;
+  } catch {}
 }
 
 const say = (msg: string, warn = false) => {
@@ -149,7 +152,7 @@ async function save(text = t.value) {
     return;
   }
   const copied = copy(r.url);
-  if (r.delete) localStorage.setItem(`bin:del:${r.id}`, r.delete);
+  if (r.delete) store("localStorage", `bin:del:${r.id}`, r.delete);
   try {
     show(r, text, enc, copied);
   } catch {
@@ -159,9 +162,7 @@ async function save(text = t.value) {
 
 function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) {
   const path = new URL(r.url!).pathname;
-  const lines = splitLines(text);
-  const meta: Record<string, string> = { lines: String(lines.length), bytes: String(r.bytes ?? 0) };
-  if (r.lines !== undefined) meta.lines = String(r.lines);
+  const meta: Record<string, string> = { lines: String(r.lines ?? toLines(text).plain.length), bytes: String(r.bytes ?? 0) };
   if (r.lang) meta.lang = r.lang;
   if (r.expires) meta.exp = String(Date.parse(r.expires) / 1000);
   if (title.value.trim()) meta.t = title.value.trim();
@@ -171,12 +172,13 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
     id: r.id!,
     ext: path.split(".")[1] ?? "",
     host: location.host,
-    wrap: /(?:^|;\s*)wrap=1(?:;|$)/.test(document.cookie),
+    wrap: cookie("wrap") === "1",
     meta,
-    text: lines.map(plainLine).join("\n"),
+    text: stripAnsi(text),
     ansi: text.includes("\x1b") ? text : undefined,
   });
   listening.abort();
+  t.remove();
   document.body.className = cls;
   document.body.innerHTML = html;
   document.title = `${meta.t || meta.name || r.id} · bin`;
@@ -185,20 +187,10 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
   addEventListener("popstate", () => location.pathname !== path && location.reload());
   copied
     .then(
-      () => toast("saved · link copied"),
-      () => toast("saved"),
+      () => toast("saved · link copied", 1800),
+      () => toast("saved", 1800),
     )
-    .then(() => requestAnimationFrame(() => setTimeout(() => load("/view.js").catch(() => location.reload()))));
-}
-
-function toast(msg: string) {
-  const el = document.createElement("div");
-  el.className = "toast";
-  el.setAttribute("role", "status");
-  el.textContent = msg;
-  document.body.append(el);
-  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("on")));
-  setTimeout(() => el.classList.remove("on"), 1800);
+    .then(() => requestAnimationFrame(() => setTimeout(() => load(asset("view.js")).catch(() => location.reload()))));
 }
 
 saveBtn.addEventListener("click", () => save(), opts);
