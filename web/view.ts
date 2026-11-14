@@ -24,6 +24,7 @@ const BLOCK = 256;
 const CV_MIN = 1000;
 const HITS_MAX = 5000;
 const HL_INLINE = 50_000;
+const MARGIN = 1500;
 
 let plain: string[] = [];
 let count = 0;
@@ -157,7 +158,7 @@ function rowClass(stripped: string): string {
 
 const row = (stripped: string, inner: string) => `<span class="${rowClass(stripped)}">${inner}</span>`;
 const block = (start: number, rows: string, size: number) =>
-  `<div class="b" style="counter-reset:n ${start}${size < BLOCK ? `;contain-intrinsic-block-size:auto ${size * 24}px` : ""}">${rows}</div>`;
+  `<div class="b" style="counter-reset:n ${start}${size < BLOCK ? `;contain-intrinsic-block-size:${size * 24}px` : ""}">${rows}</div>`;
 
 function columns(s: string): number {
   if (!/[\t\u1100-\uffff]/.test(s)) return s.length;
@@ -171,51 +172,109 @@ function columns(s: string): number {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-async function fill(lines: string[], ansi: boolean, hl: string[] | null) {
+let lines: string[] = [];
+let ansi = false;
+let hlRows: string[] | null = null;
+let starts: Style[] = [];
+let painted: boolean[] = [];
+let io: IntersectionObserver | null = null;
+
+function scan(st: Style, text: string) {
+  for (const seg of segments(text)) for (const m of seg.matchAll(TOKEN)) if (m[2] === "m") sgr(st, m[1]);
+}
+
+function paint(i: number) {
+  const b = pre.children[i] as HTMLElement | undefined;
+  if (!b) return;
+  const lo = i * BLOCK;
+  const hi = Math.min(count, lo + BLOCK);
+  const st = ansi ? { ...starts[i] } : fresh();
+  let rows = "";
+  for (let k = lo; k < hi; k++) rows += row(plain[k], ansi ? ansiLine(st, lines[k]) : hlRows ? (hlRows[k] ?? esc(plain[k])) : esc(plain[k]));
+  b.innerHTML = rows;
+  painted[i] = true;
+  io?.unobserve(b);
+  if (sel && sel[0] <= hi && sel[1] > lo) mark(Math.max(lo + 1, sel[0]), Math.min(hi, sel[1]), "sel", true);
+  for (const n of hits.slice(0, HITS_MAX)) if (n > lo && n <= hi) line(n)?.classList.add("hit");
+}
+
+function rewrap() {
+  const on = document.body.classList.toggle("wrap-on");
+  setCookie("wrap", on ? "1" : "0");
+  if (!io) return;
+  painted.forEach((done, i) => {
+    const b = pre.children[i] as HTMLElement;
+    const r = b.getBoundingClientRect();
+    if (!done || (r.bottom > -MARGIN && r.top < innerHeight + MARGIN)) return;
+    b.textContent = plain.slice(i * BLOCK, (i + 1) * BLOCK).join("\n");
+    painted[i] = false;
+    io!.observe(b);
+  });
+}
+
+function reveal(n: number) {
+  const i = (n - 1) >> 8;
+  if (!painted[i]) paint(i);
+  line(n)?.scrollIntoView({ block: "center" });
+}
+
+async function fill() {
   const st = fresh();
   const out: string[] = [];
+  const lazy = count > CV_MIN;
   let widest = 0;
   let t = performance.now();
-  for (let i = 0; i < lines.length; i += BLOCK) {
-    const end = Math.min(lines.length, i + BLOCK);
-    let rows = "";
-    for (let k = i; k < end; k++) {
-      rows += row(plain[k], ansi ? ansiLine(st, lines[k]) : hl ? (hl[k] ?? esc(plain[k])) : esc(plain[k]));
-      widest = Math.max(widest, columns(plain[k]));
+  starts = [];
+  for (let i = 0; i < count; i += BLOCK) {
+    const end = Math.min(count, i + BLOCK);
+    if (ansi) {
+      starts.push({ ...st });
+      for (let k = i; k < end; k++) scan(st, lines[k]);
     }
-    out.push(block(i, rows, end - i));
+    for (let k = i; k < end; k++) widest = Math.max(widest, columns(plain[k]));
+    out.push(block(i, lazy ? esc(plain.slice(i, end).join("\n")) : "", end - i));
     if (performance.now() - t > 30) {
       await tick();
       t = performance.now();
     }
   }
-  if (lines.length > CV_MIN) {
+  if (lazy) {
     pre.style.setProperty("--cw", `${widest}ch`);
     pre.classList.add("cv");
   }
+  io?.disconnect();
   pre.innerHTML = out.join("");
+  painted = [];
+  if (!lazy) {
+    for (let i = 0; i * BLOCK < count; i++) paint(i);
+    return;
+  }
+  const blocks = [...pre.children];
+  io = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) if (e.isIntersecting) paint(blocks.indexOf(e.target));
+    },
+    { rootMargin: `${MARGIN}px 0px` },
+  );
+  for (const b of blocks) io.observe(b);
 }
 
 async function render(raw: string) {
-  const lines = splitLines(raw);
-  const ansi = raw.includes("\x1b");
+  lines = splitLines(raw);
+  ansi = raw.includes("\x1b");
   plain = lines.map(plainLine);
   count = lines.length;
   eol = raw.endsWith("\n");
   const mods = ansi ? null : data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
   const text = mods ? plain.join("\n") : "";
-  if (mods && mods.length > 1 && text.length < HL_INLINE) {
-    await fill(lines, false, await highlight(mods, data.lang, text));
-    return fromHash();
-  }
-  const colored = mods ? highlighted(mods, text) : null;
-  await fill(lines, ansi, null);
+  if (mods && mods.length > 1 && text.length < HL_INLINE) hlRows = await highlight(mods, data.lang, text);
+  const colored = mods && !hlRows ? highlighted(mods, text) : null;
+  await fill();
   fromHash();
   const hl = await colored;
   if (!hl) return;
-  await fill(lines, false, hl);
-  if (sel) mark(sel[0], sel[1], "sel", true);
-  for (const n of hits.slice(0, HITS_MAX)) line(n)?.classList.add("hit");
+  hlRows = hl;
+  painted.forEach((on, i) => on && paint(i));
 }
 
 // ---------------------------------------------------------------- selection
@@ -240,7 +299,7 @@ function fromHash() {
   if (!m) return;
   anchor = Number(m[1]);
   select(anchor, Number(m[2] ?? m[1]));
-  if (sel) line(sel[0])?.scrollIntoView({ block: "center" });
+  if (sel) reveal(sel[0]);
 }
 
 addEventListener("hashchange", fromHash);
@@ -353,13 +412,13 @@ q.addEventListener("keydown", (e) => {
     if (n >= 1 && n <= count) {
       anchor = n;
       select(n, n);
-      line(n)?.scrollIntoView({ block: "center" });
+      reveal(n);
     }
     return closeBox();
   }
   if (!hits.length) return;
   hitAt = (hitAt + (e.shiftKey ? -1 : 1) + hits.length) % hits.length;
-  line(hits[hitAt])?.scrollIntoView({ block: "center" });
+  reveal(hits[hitAt]);
   $("count").textContent = `${hitAt + 1}/${hits.length}`;
 });
 
@@ -375,7 +434,7 @@ document.addEventListener("keydown", (e) => {
     y: copy,
     r: () => go(data.raw),
     d: () => go(data.dl),
-    w: () => setCookie("wrap", document.body.classList.toggle("wrap-on") ? "1" : "0"),
+    w: rewrap,
     t: toggleTheme,
     "/": () => openBox("find"),
     g: () => openBox("line"),

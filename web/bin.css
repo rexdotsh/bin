@@ -66,7 +66,7 @@ h1 + .meta { padding-top: 6px; }
 
 .code { --p: calc(var(--gw, 3ch) + 32px); font: 13px/24px var(--mono); tab-size: 8; white-space: pre; overflow-x: auto; margin: 0 -12px; padding: 0 12px 0 var(--p); }
 .code .b { margin: 0 -12px 0 calc(-1 * var(--p)); padding: 0 12px 0 var(--p); width: max-content; min-width: calc(100% + var(--p) + 12px); }
-.code.cv .b { content-visibility: auto; contain-intrinsic-block-size: auto 6144px; min-width: max(calc(100% + var(--p) + 12px), calc(var(--cw) + var(--p) + 12px)); }
+.code.cv .b { content-visibility: auto; contain-intrinsic-block-size: 6144px; min-width: max(calc(100% + var(--p) + 12px), calc(var(--cw) + var(--p) + 12px)); }
 .code .l { display: block; counter-increment: n; margin: 0 -12px 0 calc(-1 * var(--p)); padding: 0 12px 0 var(--p); border-radius: 6px; }
 .code .l::before { content: counter(n); display: inline-block; width: var(--gw); margin: 0 20px 0 calc(-20px - var(--gw)); text-align: right; color: var(--gut); user-select: none; cursor: pointer; }
 .code .l:hover::before { color: var(--mute); }
