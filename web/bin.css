@@ -112,6 +112,7 @@ kbd { font: 11px var(--mono); color: var(--mute2); background: var(--soft); bord
 .btn { height: 30px; display: inline-flex; align-items: center; gap: 8px; background: var(--fg); color: var(--bg); border: 0; border-radius: 8px; padding: 0 12px; font-size: 13px; font-weight: 500; cursor: pointer; flex: none; }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn kbd { font: 11px/1 var(--mono); color: inherit; background: none; padding: 0; margin: 0; opacity: 0.55; }
+@media (hover: none) and (pointer: coarse) { .btn kbd { display: none; } }
 
 .compose main { flex: 1; display: flex; padding-bottom: 40px; }
 .compose textarea { flex: 1; min-height: 50vh; border: 0; outline: 0; resize: none; background: none; padding: 40px 0 0; font: 13px/24px var(--mono); }
