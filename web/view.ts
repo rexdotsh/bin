@@ -31,6 +31,7 @@ const HITS_MAX = 5000;
 
 let plain: string[] = [];
 let count = 0;
+let eol = true;
 let sel: [number, number] | null = null;
 let anchor = 0;
 
@@ -53,10 +54,18 @@ function xterm(n: number): string {
 type Style = { fg: number | string | null; bg: number | string | null; b: boolean; d: boolean; i: boolean; u: boolean };
 const fresh = (): Style => ({ fg: null, bg: null, b: false, d: false, i: false, u: false });
 
+function extended(n: number[]): number | string | null {
+  const c = (v: number | undefined) => Math.min(255, Math.max(0, v ?? 0));
+  if (n[0] === 5) return n[1] === undefined ? null : c(n[1]) < 16 ? c(n[1]) : xterm(c(n[1]));
+  if (n[0] === 2) return `rgb(${c(n[1])},${c(n[2])},${c(n[3])})`;
+  return null;
+}
+
 function sgr(st: Style, params: string) {
-  const p = params === "" ? [0] : params.split(/[;:]/).map((x) => Number(x) || 0);
-  for (let k = 0; k < p.length; k++) {
-    const n = p[k];
+  const groups = params.split(";");
+  for (let k = 0; k < groups.length; k++) {
+    const sub = groups[k].split(":").map((x) => Number(x) || 0);
+    const n = sub[0];
     if (n === 0) Object.assign(st, fresh());
     else if (n === 1) st.b = true;
     else if (n === 2) st.d = true;
@@ -72,14 +81,12 @@ function sgr(st: Style, params: string) {
     else if (n >= 100 && n <= 107) st.bg = n - 92;
     else if (n === 49) st.bg = null;
     else if (n === 38 || n === 48) {
-      let v: number | string | null = null;
-      if (p[k + 1] === 5) {
-        const c = p[k + 2];
-        v = c < 16 ? c : xterm(c);
-        k += 2;
-      } else if (p[k + 1] === 2) {
-        v = `rgb(${p[k + 2]},${p[k + 3]},${p[k + 4]})`;
-        k += 4;
+      let v: number | string | null;
+      if (sub.length > 1) v = extended(sub[1] === 2 && sub.length > 5 ? [2, ...sub.slice(3)] : sub.slice(1));
+      else {
+        const rest = groups.slice(k + 1, k + 5).map((x) => Number(x) || 0);
+        v = extended(rest);
+        k += rest[0] === 5 ? 2 : rest[0] === 2 ? 4 : 0;
       }
       if (n === 38) st.fg = v;
       else st.bg = v;
@@ -214,6 +221,7 @@ async function render(raw: string) {
   }
   pre.innerHTML = out.join("");
   count = lines.length;
+  eol = raw.endsWith("\n");
   fromHash();
 }
 
@@ -237,7 +245,8 @@ function select(a: number, b: number) {
 function fromHash() {
   const m = location.hash.match(/^#L(\d+)(?:-L?(\d+))?$/);
   if (!m) return;
-  select(Number(m[1]), Number(m[2] ?? m[1]));
+  anchor = Number(m[1]);
+  select(anchor, Number(m[2] ?? m[1]));
   if (sel) line(sel[0])?.scrollIntoView({ block: "center" });
 }
 
@@ -274,11 +283,11 @@ function toast(msg: string) {
   t.dataset.timer = String(setTimeout(() => t!.classList.remove("on"), 1400));
 }
 
-const allText = (lines: string[]) => lines.join("\n") + (lines.length ? "\n" : "");
+const textOf = (a: number, b: number) => plain.slice(a - 1, b).join("\n") + (b >= a && (b < count || eol) ? "\n" : "");
 
 async function copy() {
   try {
-    await navigator.clipboard.writeText(allText(sel ? plain.slice(sel[0] - 1, sel[1]) : plain));
+    await navigator.clipboard.writeText(sel ? textOf(sel[0], sel[1]) : textOf(1, count));
     toast(sel ? `copied lines ${sel[0]}–${sel[1]}` : "copied");
   } catch {
     toast("couldn't copy");
@@ -379,7 +388,7 @@ document.addEventListener("keydown", (e) => {
     g: () => openBox("line"),
     e: () => {
       try {
-        sessionStorage.setItem("bin:draft", JSON.stringify({ text: allText(plain), name: data.name, lang: data.lang }));
+        sessionStorage.setItem("bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }));
         location.href = "/";
       } catch {
         toast("too big to edit here");
@@ -406,7 +415,7 @@ if (data.enc) {
       form.remove();
       document.querySelector(".meta")!.insertAdjacentHTML("beforeend", `<span>${n.toLocaleString("en")} lines</span>`);
       pre.style.setProperty("--gw", gutter(n));
-      pre.textContent = `\n${splitLines(text).map(plainLine).join("\n")}`;
+      pre.textContent = splitLines(text).map(plainLine).join("\n");
       pre.hidden = false;
       await render(text);
     } catch {
