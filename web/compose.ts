@@ -2,6 +2,7 @@ import { asset, hlModules, viewBody } from "../src/page";
 import { encrypt } from "./crypto";
 import { stripAnsi, toLines } from "../src/text";
 import "./theme";
+import { cookie, store, stored } from "./ui";
 
 type Receipt = {
   ok: boolean;
@@ -36,14 +37,16 @@ let holdPaste = false;
 let busy = false;
 let warned = false;
 
-const draft = sessionStorage.getItem("bin:draft");
+const draft = stored("sessionStorage", "bin:draft");
 if (draft) {
-  sessionStorage.removeItem("bin:draft");
-  const d = JSON.parse(draft) as { text: string; name?: string; lang?: string };
-  t.value = d.text;
-  name = d.name ?? "";
-  if (name) title.placeholder = name;
-  if (d.lang && [...lang.options].some((o) => o.value === d.lang)) lang.value = d.lang;
+  store("sessionStorage", "bin:draft", null);
+  try {
+    const d = JSON.parse(draft) as { text: string; name?: string; lang?: string };
+    t.value = d.text;
+    name = d.name ?? "";
+    if (name) title.placeholder = name;
+    if (d.lang && [...lang.options].some((o) => o.value === d.lang)) lang.value = d.lang;
+  } catch {}
 }
 
 const say = (msg: string, warn = false) => {
@@ -149,7 +152,7 @@ async function save(text = t.value) {
     return;
   }
   const copied = copy(r.url);
-  if (r.delete) localStorage.setItem(`bin:del:${r.id}`, r.delete);
+  if (r.delete) store("localStorage", `bin:del:${r.id}`, r.delete);
   try {
     show(r, text, enc, copied);
   } catch {
@@ -169,7 +172,7 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
     id: r.id!,
     ext: path.split(".")[1] ?? "",
     host: location.host,
-    wrap: /(?:^|;\s*)wrap=1(?:;|$)/.test(document.cookie),
+    wrap: cookie("wrap") === "1",
     meta,
     text: stripAnsi(text),
     ansi: text.includes("\x1b") ? text : undefined,

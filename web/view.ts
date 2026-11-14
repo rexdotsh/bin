@@ -3,6 +3,7 @@ import { highlight } from "./hl";
 import { decrypt } from "./crypto";
 import { ANSI_RE, dropStray, SGR_RE, stripAnsi, toLines, visible } from "../src/text";
 import { toggleTheme } from "./theme";
+import { setCookie, store, stored } from "./ui";
 
 type Data = {
   id: string;
@@ -356,7 +357,7 @@ async function copy() {
 $("copy").addEventListener("click", copy);
 
 const delKey = `bin:del:${data.id}`;
-const delToken = localStorage.getItem(delKey);
+const delToken = stored("localStorage", delKey);
 if (delToken && !data.diff) {
   const del = $<HTMLButtonElement>("del");
   del.hidden = false;
@@ -364,7 +365,7 @@ if (delToken && !data.diff) {
     if (!confirm("Delete this paste for everyone?")) return;
     const res = await fetch(`/${data.id}`, { method: "DELETE", headers: { "x-delete": delToken } });
     if (res.ok || res.status === 404) {
-      localStorage.removeItem(delKey);
+      store("localStorage", delKey, null);
       location.href = "/";
     } else toast("couldn't delete");
   });
@@ -429,10 +430,6 @@ q.addEventListener("keydown", (e) => {
   $("count").textContent = `${hitAt + 1}/${hits.length}`;
 });
 
-function setCookie(name: string, value: string) {
-  document.cookie = `${name}=${value}; Path=/; Max-Age=31536000; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
-}
-
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if ((e.target as HTMLElement).closest("input, textarea, select")) return;
@@ -446,12 +443,8 @@ document.addEventListener("keydown", (e) => {
     "/": () => openBox("find"),
     g: () => openBox("line"),
     e: () => {
-      try {
-        sessionStorage.setItem("bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }));
-        location.href = "/";
-      } catch {
-        toast("too big to edit here");
-      }
+      if (store("sessionStorage", "bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }))) location.href = "/";
+      else toast("couldn't open this in the editor");
     },
     Escape: () => (findBox.hidden ? select(0, -1) : closeBox()),
   };
