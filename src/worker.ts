@@ -1076,7 +1076,7 @@ function head(req: Request, title: string, extra: string, script?: string): stri
   const theme = themeOf(req);
   const fonts = script ? FONTS : FONTS.filter((f) => !f.includes("mono"));
   return `<!doctype html>
-<html lang="en" data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en" data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="format-detection" content="telephone=no, date=no, email=no, address=no">
 <title>${esc(title)}</title>${extra}
 <meta name="theme-color" content="${theme === "light" ? "#fcfcfb" : "#0a0a0a"}"><link rel="icon" href="/favicon.svg">
 ${fonts.map((f) => `<link rel="preload" href="${f}" as="font" type="font/woff2" crossorigin>`).join("")}${script ? `<script type="module" src="${script}"></script>` : ""}
