@@ -1,6 +1,6 @@
 import { asset, hlModules, viewBody } from "../src/page";
 import { encrypt } from "./crypto";
-import { plainLine, splitLines } from "./text";
+import { stripAnsi, toLines } from "../src/text";
 import "./theme";
 
 type Receipt = {
@@ -159,9 +159,7 @@ async function save(text = t.value) {
 
 function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) {
   const path = new URL(r.url!).pathname;
-  const lines = splitLines(text);
-  const meta: Record<string, string> = { lines: String(lines.length), bytes: String(r.bytes ?? 0) };
-  if (r.lines !== undefined) meta.lines = String(r.lines);
+  const meta: Record<string, string> = { lines: String(r.lines ?? toLines(text).plain.length), bytes: String(r.bytes ?? 0) };
   if (r.lang) meta.lang = r.lang;
   if (r.expires) meta.exp = String(Date.parse(r.expires) / 1000);
   if (title.value.trim()) meta.t = title.value.trim();
@@ -173,7 +171,7 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
     host: location.host,
     wrap: /(?:^|;\s*)wrap=1(?:;|$)/.test(document.cookie),
     meta,
-    text: lines.map(plainLine).join("\n"),
+    text: stripAnsi(text),
     ansi: text.includes("\x1b") ? text : undefined,
   });
   listening.abort();
