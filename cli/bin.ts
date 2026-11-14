@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm as removeFile, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { constants as osConstants, homedir } from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parseArgs } from "node:util";
@@ -11,7 +11,7 @@ const DEFAULT_URL = "https://bin.rex.wf";
 const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "bin");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const DELETES_FILE = path.join(CONFIG_DIR, "deletes.json");
-const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_BYTES = 5 * 1024 * 1024;
 const ITER = 600_000;
 const isLocal = (host: string) => ["localhost", "127.0.0.1", "[::1]"].includes(host) || host.endsWith(".localhost");
 const common = { url: { type: "string" }, json: { type: "boolean" } } as const;
@@ -121,7 +121,7 @@ async function paste(args: string[]) {
   }
   const total = files.reduce((n, [, t]) => n + Buffer.byteLength(t), 0);
   if (!total) throw new Error("that's empty");
-  if (total > MAX_BYTES) throw new Error("over the 10 MB limit");
+  if (total > MAX_BYTES) throw new Error("over the 5 MB limit");
 
   if (!o.password) {
     const found = files.flatMap(([n, t]) => findSecrets(t).map((f) => ({ ...f, file: n })));
@@ -144,6 +144,7 @@ async function paste(args: string[]) {
     const password = await readSecret("password: ", "BIN_PASSWORD");
     params.set("enc", "1");
     if (o.name) params.set("name", o.name);
+    else if (!o.lang && files[0][0].includes(".")) params.set("lang", files[0][0].split(".").pop()!);
     init = { method: "POST", body: encrypt(files[0][1], password), headers: { "content-type": "text/plain; charset=utf-8" } };
   } else if (files.length === 1) {
     if (files[0][0]) params.set("name", files[0][0]);
@@ -205,12 +206,12 @@ async function run(args: string[]) {
   });
   session.push(outDec.end() + errDec.end());
   process.off("SIGINT", ignore);
-  const exit = code ?? (signal ? `${signal}` : "1");
+  const exit = code ?? signal ?? "1";
   const dur = Date.now() - started;
-  process.exitCode = code ?? 128 + (signal === "SIGINT" ? 2 : signal === "SIGTERM" ? 15 : 1);
+  process.exitCode = code ?? 128 + ((signal && osConstants.signals[signal]) || 1);
   await session.close({ exit, dur });
   if (!session.receipt) return;
-  if (o.json) return printJson({ ...session.receipt, exit, durationMs: dur });
+  if (o.json) return printJson({ ...session.receipt, exit: process.exitCode, ...(signal && { signal }), durationMs: dur });
   const link = session.receipt.url;
   const copied = process.stderr.isTTY && (await copy(link));
   process.stderr.write(`bin: exit ${exit} · ${fmtDuration(dur)} · ${link}${copied ? "  (copied)" : ""}\n`);
@@ -245,11 +246,11 @@ function collect(cfg: Config, opts: { title?: string; ttl?: string; cmd: string 
       pending += s;
       const nl = pending.lastIndexOf("\n") + 1;
       if (!nl) return;
-      keep(redactLine(pending.slice(0, nl)));
+      keep(redactLine(pending.slice(0, nl)).replaceAll("\0", ""));
       pending = pending.slice(nl);
     },
     close: async (seal) => {
-      keep(redactLine(pending));
+      keep(redactLine(pending).replaceAll("\0", ""));
       const params = new URLSearchParams({ lang: "log", cmd: opts.cmd });
       if (opts.title) params.set("title", opts.title);
       if (opts.ttl) params.set("ttl", opts.ttl);
@@ -291,8 +292,8 @@ async function get(args: string[]) {
   });
   if (positionals.length !== 1) throw new Error("usage: bin get <id|url> [--digest | --grep text | --head n | --tail n | --lines a-b | --raw]");
   const cfg = await loadConfig(o.url);
-  const { base, id, file } = locate(cfg, positionals[0]);
-  const params = new URLSearchParams();
+  const { base, id, file, query } = locate(cfg, positionals[0]);
+  const params = new URLSearchParams(query);
   if (o.digest) params.set("digest", "1");
   if (o.grep) params.set("grep", o.grep);
   if (o.context) params.set("context", o.context);
@@ -312,7 +313,7 @@ async function get(args: string[]) {
     const envelope = res.headers.get("x-bin-encrypted") && !o.raw && !o.password ? (await (await request(cfg, `${base}/raw/${id}`)).text()) : body;
     body = decrypt(envelope, await readSecret("password: ", "BIN_PASSWORD"));
   }
-  const facts = [res.headers.get("x-bin-lines") && `${res.headers.get("x-bin-lines")} lines`, res.headers.get("x-bin-tokens") && `~${res.headers.get("x-bin-tokens")} tokens`];
+  const facts = [res.headers.get("x-bin-lines") && `${res.headers.get("x-bin-lines")} line${res.headers.get("x-bin-lines") === "1" ? "" : "s"}`, res.headers.get("x-bin-tokens") && `~${res.headers.get("x-bin-tokens")} tokens`];
   const range = res.headers.get("x-bin-range");
   if (range) facts.push(`showing ${range}`);
   const exit = res.headers.get("x-bin-exit");
@@ -338,19 +339,19 @@ async function rm(args: string[]) {
   console.log(`deleted ${id}`);
 }
 
-function locate(cfg: Config, ref: string): { base: string; id: string; file: string } {
+function locate(cfg: Config, ref: string): { base: string; id: string; file: string; query: string } {
   if (/^https?:\/\//i.test(ref)) {
     const u = new URL(ref);
     const parts = u.pathname.split("/").filter(Boolean);
     if (parts[0] === "raw" || parts[0] === "dl") parts.shift();
     const id = parts[0]?.match(/^([A-Za-z0-9+-]{6})/)?.[1];
     if (!id) throw new Error(`that doesn't look like a paste link: ${ref}`);
-    return { base: u.origin, id, file: parts.slice(1).join("/") };
+    return { base: u.origin, id, file: parts.slice(1).join("/"), query: u.search };
   }
   const [idPart, ...rest] = ref.split("/");
   const id = idPart.match(/^([A-Za-z0-9+-]{6})(?:\.\w+)?$/)?.[1];
   if (!id) throw new Error(`not a paste id: ${ref}`);
-  return { base: cfg.url, id, file: rest.join("/") };
+  return { base: cfg.url, id, file: rest.map(encodeURIComponent).join("/"), query: "" };
 }
 
 async function remember(r: Receipt) {
@@ -568,10 +569,14 @@ async function api<T>(cfg: Config, target: string, init?: RequestInit): Promise<
 async function readTextFile(p: string): Promise<string> {
   const st = await stat(p).catch(() => null);
   if (!st?.isFile()) throw new Error(`not a file: ${p}`);
-  if (st.size > MAX_BYTES) throw new Error(`${p} is over the 10 MB limit`);
+  if (st.size > MAX_BYTES) throw new Error(`${p} is over the 5 MB limit`);
   const bytes = await readFile(p);
   if (bytes.includes(0)) throw new Error(`${p} isn't text`);
-  return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new Error(`${p} isn't UTF-8 text`);
+  }
 }
 
 async function readStdin(): Promise<string> {
@@ -579,12 +584,16 @@ async function readStdin(): Promise<string> {
   let size = 0;
   for await (const chunk of process.stdin) {
     size += chunk.length;
-    if (size > MAX_BYTES) throw new Error("stdin is over the 10 MB limit");
+    if (size > MAX_BYTES) throw new Error("stdin is over the 5 MB limit");
     chunks.push(chunk);
   }
   const bytes = Buffer.concat(chunks);
   if (bytes.includes(0)) throw new Error("stdin isn't text");
-  return bytes.toString("utf8");
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new Error("stdin isn't UTF-8 text");
+  }
 }
 
 function commonDir(paths: string[]): string {

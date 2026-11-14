@@ -131,7 +131,7 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       ok: true,
       id: pid,
       url: link,
-      raw: `${url.origin}/raw/${pid}`,
+      ...(!extra.files && { raw: `${url.origin}/raw/${pid}` }),
       expires: meta.exp ? new Date(Number(meta.exp) * 1000).toISOString() : null,
       ...(anonDelete && { delete: anonDelete }),
       ...extra,
@@ -144,9 +144,15 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
     return text(`${link}\n${notes.map((n) => `${n}\n`).join("")}`, 201);
   };
 
-  for (const [k, max] of [["exit", 20], ["dur", 12]] as const) {
-    const v = clean(q.get(k), max);
-    if (v) meta[k] = v;
+  const exit = q.get("exit");
+  if (exit !== null) {
+    if (!/^(?:-?\d{1,5}|SIG[A-Z0-9]{1,10})$/.test(exit)) return fail(400, "exit must be a number or a signal name like SIGKILL");
+    meta.exit = exit;
+  }
+  const dur = q.get("dur");
+  if (dur !== null) {
+    if (!/^\d{1,12}$/.test(dur)) return fail(400, "dur must be milliseconds");
+    meta.dur = dur;
   }
 
   const type = req.headers.get("content-type") ?? "";
@@ -186,6 +192,7 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       if (total > max) return tooBig();
       const body = decodeText(bytes);
       if (body === null) return fail(415, `${name} isn't text`);
+      if (!bytes.byteLength) return fail(400, `${name} is empty`);
       files.push([name, bytes, body]);
     }
     if (!files.length) return fail(400, "no files in the form");
@@ -227,7 +234,10 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
   if (!(await budget(1))) return busy();
   const body = decodeText(raw);
   if (body === null) return fail(415, "that isn't text; bin only takes text");
-  return single(env, url, id, meta, raw, body, cleanName(q.get("name") ?? pathName ?? ""), q, receipt);
+  const givenName = q.get("name") ?? pathName ?? "";
+  const name = cleanName(givenName);
+  if (givenName && !name) return fail(400, `bad file name: ${givenName}`);
+  return single(env, url, id, meta, raw, body, name, q, receipt);
 }
 
 async function single(
@@ -352,6 +362,16 @@ async function readPaste(
   file: string,
   mode: "view" | "raw" | "dl",
 ): Promise<Response> {
+  if (req.method === "HEAD" && !file && (mode !== "view" || !wantsHtml(req))) {
+    const head = await env.BUCKET.head(`p/${id}`);
+    const meta = head?.customMetadata ?? {};
+    if (!head || (meta.exp && Number(meta.exp) * 1000 < Date.now())) return notFound(req);
+    if (meta.kind !== "multi") {
+      const headers = agentHeaders(meta);
+      headers.set("content-type", "text/plain; charset=utf-8");
+      return new Response(null, { headers });
+    }
+  }
   const obj = await getPaste(env, ctx, id);
   if (!obj) return notFound(req);
   const meta = obj.customMetadata ?? {};
@@ -415,7 +435,8 @@ function rawResponse(body: ReadableStream | string, meta: Meta, id: string, mode
   headers.set("content-type", "text/plain; charset=utf-8");
   if (mode === "dl") {
     const name = (meta.name || `${id}.${meta.enc ? "json" : "txt"}`).split("/").pop()!.replace(/[^\w.+-]/g, "_");
-    headers.set("content-disposition", `attachment; filename="${name}"`);
+    const full = (meta.name || "").split("/").pop() || name;
+    headers.set("content-disposition", `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(full)}`);
   }
   return new Response(body, { headers });
 }
@@ -449,10 +470,12 @@ function present(
     const lines = plain.split("\n");
     if (plain.endsWith("\n")) lines.pop();
     let span: [number, number] | null = null;
+    const count = (k: string) => (/^[1-9]\d{0,8}$/.test(q.get(k) ?? "") ? Number(q.get(k)) : 0);
     if (q.has("lines")) span = range(q.get("lines"));
-    else if (q.has("head")) span = [1, Math.max(1, Number(q.get("head")) || 0)];
-    else span = [Math.max(1, lines.length - Math.max(1, Number(q.get("tail")) || 0) + 1), lines.length];
-    if (!span) return fail(400, "lines must look like 10-80 or 42");
+    else if (q.has("head")) span = count("head") ? [1, count("head")] : null;
+    else span = count("tail") ? [Math.max(1, lines.length - count("tail") + 1), lines.length] : null;
+    if (!span || span[0] < 1 || span[1] < span[0]) return fail(400, "use lines=10-80 or lines=42, head=N or tail=N, with N at least 1");
+    if (lines.length && span[0] > lines.length) return fail(400, `the paste has ${lines.length} line${lines.length === 1 ? "" : "s"}`);
     const [a, b] = [Math.max(1, span[0]), Math.min(lines.length, span[1])];
     headers.set("x-bin-range", `${a}-${b}`);
     const picked = lines.slice(a - 1, b);
@@ -482,10 +505,10 @@ function agentHeaders(meta: Meta): Headers {
 }
 
 function multiIndex(url: URL, id: string, meta: Meta, files: FileEntry[]): string {
-  const head = `# ${meta.t ? `${meta.t} · ` : ""}${files.length} files · ${Number(meta.lines).toLocaleString("en")} lines · ~${Number(meta.tok).toLocaleString("en")} tokens\n`;
+  const head = `# ${meta.t ? `${meta.t} · ` : ""}${files.length} files · ${plural(Number(meta.lines), "line")} · ~${Number(meta.tok).toLocaleString("en")} tokens\n`;
   const width = Math.max(...files.map((f) => f.name.length));
   const rows = files.map(
-    (f) => `${f.name.padEnd(width)}  ${String(f.lines).padStart(6)} lines  ${`~${f.tokens}`.padStart(7)} tokens  ${url.origin}/${id}/${encodePath(f.name)}`,
+    (f) => `${f.name.padEnd(width)}  ${String(f.lines).padStart(6)} ${f.lines === 1 ? "line " : "lines"}  ${`~${f.tokens}`.padStart(7)} tokens  ${url.origin}/${id}/${encodePath(f.name)}`,
   );
   return `${head}\n${rows.join("\n")}\n`;
 }
@@ -545,7 +568,10 @@ function unified(an: string, bn: string, a: string, b: string): string {
     let gap = 0;
     while (end < ops.length) {
       if (ops[end][0] !== 0) gap = 0;
-      else if (++gap > 2 * C) break;
+      else if (++gap > 2 * C) {
+        gap--;
+        break;
+      }
       end++;
     }
     end -= Math.max(0, gap - C);
@@ -654,7 +680,7 @@ function bareCr(src: string | Uint8Array): boolean {
   return false;
 }
 
-const ANSI_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]?/g;
+const ANSI_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()*+\-./][ -~]|\x1b[@-Z\\-_]?/g;
 
 function stripAnsi(s: string): string {
   if (!/[\x00-\x08\x0b-\x1f\x7f]/.test(s)) return s;
@@ -672,8 +698,8 @@ function pickLang(given: string | null, name: string, body: string): string {
   const ext = base.includes(".") ? base.split(".").pop()! : "";
   if (ext && Object.hasOwn(EXT_LANG, ext)) return EXT_LANG[ext];
   const head = body.slice(0, 2048);
-  if (/^diff --git /.test(head) || (/^--- /m.test(head) && /^\+\+\+ /m.test(head) && /^@@ /m.test(head))) return "diff";
-  const shebang = head.match(/^#!\S*?(?:\/env\s+)?(\w+)/);
+  if (/^\uFEFF?diff --git /.test(head) || (/^--- /m.test(head) && /^\+\+\+ /m.test(head) && /^@@ /m.test(head))) return "diff";
+  const shebang = head.match(/^\uFEFF?#!(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?(\w+)/);
   if (shebang) return { bash: "bash", sh: "bash", zsh: "bash", python: "python", python3: "python", node: "javascript", bun: "typescript" }[shebang[1]] ?? "";
   if (head.includes("\x1b[")) return "log";
   return "";
@@ -723,7 +749,8 @@ function range(spec: string | null): [number, number] | null {
 type Alt = { start: boolean; end: boolean; pieces: string[] };
 
 function matcher(pattern: string): ((line: string) => boolean) | { error: string } {
-  if (!pattern || pattern.length > 300) return { error: "grep needs a pattern of at most 300 characters" };
+  if (!pattern) return { error: "grep needs a pattern" };
+  if (pattern.length > 300) return { error: "grep patterns are limited to 300 characters" };
   const fold = !/[A-Z]/.test(pattern);
   const alts: Alt[] = [];
   let cur: Alt = { start: false, end: false, pieces: [""] };
@@ -864,7 +891,7 @@ function digest(body: string, meta: Meta): string {
   const loc = (a: number, b: number) => (a === b ? `L${a + 1}` : `L${a + 1}-${b + 1}`);
   const out: string[] = [];
   const head = [
-    `${lines.length.toLocaleString("en")} lines`,
+    plural(lines.length, "line"),
     `${errorCount} error${errorCount === 1 ? "" : "s"}`,
     `${warnCount} warning${warnCount === 1 ? "" : "s"}`,
   ];
@@ -1028,7 +1055,7 @@ function harden(res: Response): Response {
   h.set("x-robots-tag", "noindex, nofollow");
   h.set("referrer-policy", "no-referrer");
   h.set("strict-transport-security", "max-age=31536000");
-  h.set("vary", "accept, sec-fetch-dest, user-agent, cookie");
+  h.set("vary", [h.get("vary"), "accept, sec-fetch-dest, user-agent, cookie"].filter(Boolean).join(", "));
   if (!h.has("cache-control")) h.set("cache-control", "private, no-cache, no-transform");
   if ((h.get("content-type") ?? "").startsWith("text/html")) {
     h.set(
@@ -1066,16 +1093,18 @@ function token(): string {
 }
 
 function clean(s: string | null | undefined, max: number): string {
-  return (s ?? "").replace(/[\x00-\x1f\x7f]/g, " ").trim().slice(0, max);
+  return [...(s ?? "").replace(/[\x00-\x1f\x7f]/g, " ").trim()].slice(0, max).join("").toWellFormed();
 }
 
 function cleanName(raw: string): string {
   const name = raw.replace(/^\.\/+/, "").trim();
   if (!name || name.length > 200 || name.includes("\\") || /[\x00-\x1f\x7f]/.test(name)) return "";
   const segs = name.split("/");
-  if (segs[0] === "vs" || segs.some((s) => !s || s === "." || s === ".." || s.startsWith("_"))) return "";
+  if (segs[0] === "vs" || segs.some((s) => !s || s === "." || s === "..")) return "";
   return name;
 }
+
+const plural = (n: number, word: string) => `${n.toLocaleString("en")} ${word}${n === 1 ? "" : "s"}`;
 
 const encodePath = (name: string) => name.split("/").map(encodeURIComponent).join("/");
 

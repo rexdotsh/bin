@@ -55,7 +55,9 @@ for (const [face, file, features] of [
     const woff2 = await subsetFont(Buffer.from(src), String.fromCodePoint(...cps), { targetFormat: "woff2", keepFeatures: [...features], variationAxes: { wght: { min: 400, max: 600 } } });
     const name = `${face}${suffix}.${new Bun.CryptoHasher("sha256").update(woff2).digest("hex").slice(0, 8)}.woff2`;
     await Bun.write(`${out}/fonts/${name}`, woff2);
-    css = css.replaceAll(`url("/fonts/${face}${suffix}.woff2") format("woff2");`, `url("/fonts/${name}") format("woff2"); unicode-range: ${unicodeRange(cps)};`);
+    const fontUrl = `url("/fonts/${face}${suffix}.woff2") format("woff2");`;
+    if (!css.includes(fontUrl)) throw new Error(`web/bin.css has no @font-face for /fonts/${face}${suffix}.woff2`);
+    css = css.replaceAll(fontUrl, `url("/fonts/${name}") format("woff2"); unicode-range: ${unicodeRange(cps)};`);
   }
 }
 const tmpCss = `/tmp/bin-css-${process.pid}.css`;
