@@ -31,3 +31,20 @@ export function setCookie(name: string, value: string) {
     document.cookie = `${name}=${value}; Path=/; Max-Age=31536000; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
   } catch {}
 }
+
+export function toast(msg: string, ms = 1400) {
+  let el = document.querySelector<HTMLDivElement>(".toast");
+  const fresh = !el;
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "toast";
+    el.setAttribute("role", "status");
+    document.body.append(el);
+  }
+  const t = el;
+  t.textContent = msg;
+  clearTimeout(Number(t.dataset.timer));
+  if (fresh) requestAnimationFrame(() => requestAnimationFrame(() => t.classList.add("on")));
+  else t.classList.add("on");
+  t.dataset.timer = String(setTimeout(() => t.classList.remove("on"), ms));
+}

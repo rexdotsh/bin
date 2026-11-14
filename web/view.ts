@@ -3,7 +3,7 @@ import { highlight } from "./hl";
 import { decrypt } from "./crypto";
 import { ANSI_RE, dropStray, SGR_RE, stripAnsi, toLines, visible } from "../src/text";
 import { toggleTheme } from "./theme";
-import { setCookie, store, stored } from "./ui";
+import { setCookie, store, stored, toast } from "./ui";
 
 type Data = {
   id: string;
@@ -328,20 +328,6 @@ pre.addEventListener("click", (e) => {
 });
 
 // ---------------------------------------------------------------- actions
-
-function toast(msg: string) {
-  let t = document.querySelector<HTMLDivElement>(".toast");
-  if (!t) {
-    t = document.createElement("div");
-    t.className = "toast";
-    t.setAttribute("role", "status");
-    document.body.append(t);
-  }
-  t.textContent = msg;
-  t.classList.add("on");
-  clearTimeout(Number(t.dataset.timer));
-  t.dataset.timer = String(setTimeout(() => t!.classList.remove("on"), 1400));
-}
 
 const textOf = (a: number, b: number) => plain.slice(a - 1, b).join("\n") + (b >= a && (b < count || eol) ? "\n" : "");
 

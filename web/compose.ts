@@ -2,7 +2,7 @@ import { asset, hlModules, viewBody } from "../src/page";
 import { encrypt } from "./crypto";
 import { stripAnsi, toLines } from "../src/text";
 import "./theme";
-import { cookie, store, stored } from "./ui";
+import { cookie, store, stored, toast } from "./ui";
 
 type Receipt = {
   ok: boolean;
@@ -186,20 +186,10 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
   addEventListener("popstate", () => location.pathname !== path && location.reload());
   copied
     .then(
-      () => toast("saved · link copied"),
-      () => toast("saved"),
+      () => toast("saved · link copied", 1800),
+      () => toast("saved", 1800),
     )
     .then(() => requestAnimationFrame(() => setTimeout(() => load(asset("view.js")).catch(() => location.reload()))));
-}
-
-function toast(msg: string) {
-  const el = document.createElement("div");
-  el.className = "toast";
-  el.setAttribute("role", "status");
-  el.textContent = msg;
-  document.body.append(el);
-  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("on")));
-  setTimeout(() => el.classList.remove("on"), 1800);
 }
 
 saveBtn.addEventListener("click", () => save(), opts);
