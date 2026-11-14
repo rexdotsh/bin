@@ -78,6 +78,7 @@ export function viewBody(v: View): { cls: string; html: string } {
   if (enc) facts.push(`<span class="lock">encrypted</span>`);
   if (meta.exp) facts.push(`<span>expires ${new Date(Number(meta.exp) * 1000).toISOString().slice(0, 10)}</span>`);
   if (live) facts.push(`<span class="live"><i>live</i><i>disconnected</i></span>`);
+  if (enc && v.text !== undefined) facts.push(`<span>${lines.toLocaleString("en")} lines</span>`);
   const filePath = v.file ? `/${segments(v.file)}` : "";
   const raw = v.diff ? null : `/raw/${id}${filePath}`;
   const dl = v.diff ? null : `/dl/${id}${filePath}`;
