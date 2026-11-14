@@ -447,10 +447,15 @@ if (data.enc) {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const pw = $<HTMLInputElement>("pw");
+    const btn = form.querySelector("button")!;
+    if (btn.disabled) return;
+    btn.disabled = true;
+    $("pwerr").hidden = true;
     let text: string;
     try {
       text = await decrypt(data.enc!, pw.value);
     } catch {
+      btn.disabled = false;
       $("pwerr").hidden = false;
       return pw.select();
     }
