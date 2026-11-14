@@ -124,13 +124,14 @@ kbd { font: 11px var(--mono); color: var(--mute2); background: var(--soft); bord
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn kbd { font: 11px/1 var(--mono); color: inherit; background: none; padding: 0; margin: 0; opacity: 0.55; }
 
-.compose main { flex: 1; display: flex; }
-.compose textarea { flex: 1; min-height: 50vh; border: 0; outline: 0; resize: none; background: none; padding: 40px 0; font: 13px/24px var(--mono); }
+.compose main { flex: 1; display: flex; padding-bottom: 40px; }
+.compose textarea { flex: 1; min-height: 50vh; border: 0; outline: 0; resize: none; background: none; padding: 40px 0 0; font: 13px/24px var(--mono); }
 .compose textarea::placeholder { font: 18px/1.6 var(--sans); color: var(--gut); letter-spacing: -0.01em; }
 .bar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 14px 0 26px; border-top: 1px solid var(--line); font-size: 13px; color: var(--mute2); }
 .bar::before { content: ""; position: absolute; top: -1px; left: 0; width: 100%; height: 1px; background: var(--fg); transform: scaleX(0); transform-origin: left; opacity: 0; }
 .bar.busy::before { opacity: 1; animation: busy 1.2s ease-out infinite; }
 @keyframes busy { from { transform: scaleX(0); } to { transform: scaleX(1); opacity: 0; } }
+.bar .btn { align-items: baseline; line-height: 30px; }
 .bar #title { width: 170px; }
 .bar .lbl { margin-left: 6px; }
 .bar select { padding: 0 8px; cursor: pointer; }
@@ -142,7 +143,7 @@ kbd { font: 11px var(--mono); color: var(--mute2); background: var(--soft); bord
 .pw .lockbtn[aria-pressed="true"] span { display: none; }
 .pw input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; padding: 0 8px 0 6px; font-size: 13px; }
 .pw input::placeholder { color: var(--mute); }
-#status { position: absolute; right: 0; bottom: 100%; margin-bottom: 10px; padding-left: 10px; background: var(--bg); color: var(--mute2); font-size: 12px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+#status { position: absolute; left: 0; right: 0; bottom: 100%; margin-bottom: 10px; text-align: right; pointer-events: none; color: var(--mute2); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #status.warn { color: var(--amber); }
 
 @supports (appearance: base-select) {

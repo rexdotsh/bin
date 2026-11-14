@@ -80,7 +80,7 @@ async function save() {
     const hit = secrets.find(([re]) => re.test(sample));
     if (hit) {
       warned = true;
-      return say(`this looks like it contains a ${hit[1]} · save again to post anyway`, true);
+      return say(`looks like a ${hit[1]} · save again to post anyway`, true);
     }
   }
   busy = true;
