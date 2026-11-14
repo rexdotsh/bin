@@ -75,7 +75,6 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
     return new Response(usage.body, { headers: { "content-type": "text/plain; charset=utf-8" } });
   }
   if (m === "PUT" && parts.length === 1) return create(req, env, url, parts[0]);
-  if (parts[0] === "robots.txt") return text("User-agent: *\nDisallow: /\n");
 
   const [first, ...rest] = parts;
   if ((first === "raw" || first === "dl") && rest.length) {
@@ -154,9 +153,15 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
   const multipart = type.startsWith("multipart/form-data");
   const raw = await readBounded(req, multipart ? max + 65536 : max);
   if (!raw) return tooBig();
-  if (!owner && !(await env.ANON_BYTES.limit({ key: "all", delta: Math.max(1, Math.ceil(raw.byteLength / 65536)) })).success) {
-    return fail(429, "bin is taking a lot of anonymous pastes right now; try again in a minute", { "retry-after": "60" });
-  }
+  const budget = async (writes: number, perIp = 0) => {
+    if (owner) return true;
+    const [bytes, ipLimit] = await Promise.all([
+      env.ANON_BYTES.limit({ key: "all", delta: Math.max(writes, Math.ceil(raw.byteLength / 65536)) }),
+      perIp ? env.ANON.limit({ key: ip, delta: perIp }) : { success: true },
+    ]);
+    return bytes.success && ipLimit.success;
+  };
+  const busy = () => fail(429, "bin is taking a lot of anonymous pastes right now; try again in a minute", { "retry-after": "60" });
 
   if (multipart) {
     let form: FormData;
@@ -184,8 +189,11 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       files.push([name, bytes, body]);
     }
     if (!files.length) return fail(400, "no files in the form");
-    if (files.length === 1) return single(env, url, id, meta, files[0][1], files[0][2], files[0][0], q, receipt);
-    if (!owner && !(await env.ANON.limit({ key: ip, delta: Math.ceil(files.length / 5) })).success) return slowDown();
+    if (files.length === 1) {
+      if (!(await budget(1))) return busy();
+      return single(env, url, id, meta, files[0][1], files[0][2], files[0][0], q, receipt);
+    }
+    if (!(await budget(files.length + 1, Math.ceil(files.length / 5)))) return busy();
     const entries: FileEntry[] = files.map(([name, bytes, body]) => {
       const st = statsOf(bytes);
       return { name, lang: pickLang(null, name, body), lines: Number(st.lines), bytes: Number(st.bytes), tokens: Number(st.tok) };
@@ -216,6 +224,7 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
   }
 
   if (!raw.byteLength) return fail(400, "the paste is empty");
+  if (!(await budget(1))) return busy();
   const body = decodeText(raw);
   if (body === null) return fail(415, "that isn't text; bin only takes text");
   return single(env, url, id, meta, raw, body, cleanName(q.get("name") ?? pathName ?? ""), q, receipt);
@@ -325,7 +334,15 @@ async function getPaste(env: Env, ctx: ExecutionContext, id: string): Promise<R2
 const SLICES = ["digest", "lines", "head", "tail", "grep"];
 const slicing = (url: URL) => SLICES.some((k) => url.searchParams.has(k));
 
-async function read(
+async function read(...args: Parameters<typeof readPaste>): Promise<Response> {
+  const res = await readPaste(...args);
+  const maxAge = Number(res.headers.get("x-max-age") ?? 0);
+  res.headers.delete("x-max-age");
+  if (res.status === 200 && maxAge > 0) res.headers.set("cache-control", `private, max-age=${maxAge}, no-transform`);
+  return res;
+}
+
+async function readPaste(
   req: Request,
   env: Env,
   ctx: ExecutionContext,
@@ -338,7 +355,23 @@ async function read(
   const obj = await getPaste(env, ctx, id);
   if (!obj) return notFound(req);
   const meta = obj.customMetadata ?? {};
+  const left = meta.exp ? Number(meta.exp) - Math.floor(Date.now() / 1000) : Infinity;
+  const res = await readBody(req, env, url, id, ext, file, mode, obj, meta);
+  if (res.status === 200 && left > 0) res.headers.set("x-max-age", String(Math.min(300, left)));
+  return res;
+}
 
+async function readBody(
+  req: Request,
+  env: Env,
+  url: URL,
+  id: string,
+  ext: string | undefined,
+  file: string,
+  mode: "view" | "raw" | "dl",
+  obj: R2ObjectBody,
+  meta: Meta,
+): Promise<Response> {
   if (meta.kind === "multi") {
     const index = JSON.parse(await obj.text()) as { files: FileEntry[] };
     if (!file) {
@@ -607,10 +640,18 @@ function statsOf(src: string | Uint8Array, byteLength?: number): Meta {
   }
   if (src.length && last !== 10) lines++;
   const meta: Meta = { lines: String(lines), bytes: String(bytes), tok: String(Math.ceil(bytes / 4)) };
-  const has = (c: number) => (typeof src === "string" ? src.includes(String.fromCharCode(c)) : src.includes(c));
-  if (has(27)) meta.ansi = "1";
-  if (has(13)) meta.cr = "1";
+  if (typeof src === "string" ? src.includes("\x1b") : src.includes(27)) meta.ansi = "1";
+  if (bareCr(src)) meta.cr = "1";
   return meta;
+}
+
+function bareCr(src: string | Uint8Array): boolean {
+  if (typeof src === "string") {
+    for (let i = src.indexOf("\r"); i !== -1; i = src.indexOf("\r", i + 1)) if (src[i + 1] !== "\n") return true;
+  } else {
+    for (let i = src.indexOf(13); i !== -1; i = src.indexOf(13, i + 1)) if (src[i + 1] !== 10) return true;
+  }
+  return false;
 }
 
 const ANSI_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]?/g;
@@ -618,9 +659,8 @@ const ANSI_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[
 function stripAnsi(s: string): string {
   if (!/[\x00-\x08\x0b-\x1f\x7f]/.test(s)) return s;
   let out = s.replace(ANSI_RE, "");
-  if (out.includes("\r")) {
-    out = out.replace(/\r\n/g, "\n").replace(/[^\n]*\r[^\n]*/g, (l) => l.slice(l.lastIndexOf("\r", l.length - 2) + 1).replace(/\r$/, ""));
-  }
+  if (out.includes("\r")) out = out.replace(/\r\n/g, "\n");
+  if (out.includes("\r")) out = out.replace(/^[^\n\r]*\r[^\n]*/gm, (l) => l.slice(l.lastIndexOf("\r", l.length - 2) + 1).replace(/\r$/, ""));
   return out.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 

@@ -68,7 +68,7 @@ await $`cp skill/bin/SKILL.md ${out}/skill.md && cp cli/install.sh ${out}/instal
 await Bun.write(`${out}/_headers`, "/fonts/*\n  cache-control: public, max-age=31536000, immutable\n");
 
 const files = (await $`cd ${out} && find . -type f | sort`.text()).trim().split("\n");
-const expected = ["_headers", "bin.css", "cli", "compose.js", "favicon.svg", "install", "llms.txt", "skill.md", "view.js"];
+const expected = ["_headers", "bin.css", "cli", "compose.js", "favicon.ico", "favicon.svg", "install", "llms.txt", "robots.txt", "skill.md", "view.js"];
 const unexpected = files.map((f) => f.slice(2)).filter((f) => !expected.includes(f) && !/^fonts\/geist(-mono)?(-ext)?\.[0-9a-f]{8}\.woff2$/.test(f) && !/^hl\/[a-z]+\.js$/.test(f));
 if (unexpected.length || expected.some((f) => !files.includes(`./${f}`)) || files.length !== expected.length + 4 + langs.length + 2) {
   throw new Error(`unexpected dist: ${unexpected.join(" ") || files.join(" ")}`);
