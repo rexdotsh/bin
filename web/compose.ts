@@ -178,6 +178,7 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
     ansi: text.includes("\x1b") ? text : undefined,
   });
   listening.abort();
+  t.remove();
   document.body.className = cls;
   document.body.innerHTML = html;
   document.title = `${meta.t || meta.name || r.id} · bin`;
