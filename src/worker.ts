@@ -198,7 +198,7 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       files.map(([name, bytes], i) =>
         env.BUCKET.put(`p/${placed.id}/${name}`, bytes, {
           httpMetadata: { contentType: "text/plain; charset=utf-8" },
-          customMetadata: { lang: entries[i].lang, lines: String(entries[i].lines), tok: String(entries[i].tokens) },
+          customMetadata: { lang: entries[i].lang, ...statsOf(bytes) },
         }),
       ),
     );
