@@ -438,10 +438,13 @@ async function readBody(
 }
 
 async function viewText(req: Request, url: URL, meta: Meta, obj: R2ObjectBody): Promise<string> {
-  if (meta.enc === "1" || !(Number(meta.bytes) > INLINE_MAX) || slicing(url) || !wantsHtml(req)) return obj.text();
+  if (meta.enc === "1" || !(Number(meta.bytes) > INLINE_MAX) || slicing(url) || !wantsHtml(req)) return textOf(obj);
   await obj.body.cancel();
   return "";
 }
+
+const UTF8 = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+const textOf = async (obj: R2ObjectBody) => UTF8.decode(await obj.arrayBuffer());
 
 function streamable(req: Request, url: URL, meta: Meta): boolean {
   return !meta.ansi && !meta.cr && !meta.enc && meta.lines !== undefined && !slicing(url) && !wantsHtml(req);
@@ -552,7 +555,7 @@ async function compare(req: Request, env: Env, ctx: ExecutionContext, url: URL, 
     if (m.kind || m.enc) return refuse(400, "only plain single-file pastes can be compared");
     if (Number(m.bytes) > 512_000 || Number(m.lines) > 5000) return refuse(400, "too big to compare (over 500 KB or 5,000 lines)");
   }
-  const [ta, tb] = await Promise.all([x.text(), y.text()]);
+  const [ta, tb] = await Promise.all([textOf(x), textOf(y)]);
   const out = unified(a, b, stripAnsi(ta), stripAnsi(tb));
   const meta: Meta = { ...statsOf(new TextEncoder().encode(out), out), lang: "diff", t: `${a} → ${b}` };
   return present(req, url, `${a}/vs/${b}`, undefined, meta, out, { diff: `${a}/vs/${b}` });
