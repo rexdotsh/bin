@@ -826,7 +826,7 @@ function range(spec: string | null): [number, number] | null {
 
 type Alt = { start: boolean; end: boolean; pieces: string[] };
 
-function matcher(pattern: string): ((line: string) => boolean) | { error: string } {
+function matcher(pattern: string): { fold: boolean; test: (line: string) => boolean } | { error: string } {
   if (!pattern) return { error: "grep needs a pattern" };
   if (pattern.length > 300) return { error: "grep patterns are limited to 300 characters" };
   const fold = !/[A-Z]/.test(pattern);
@@ -877,20 +877,18 @@ function matcher(pattern: string): ((line: string) => boolean) | { error: string
     }
     return true;
   };
-  return (line) => {
-    const l = fold ? line.toLowerCase() : line;
-    return alts.some((a) => one(l, a));
-  };
+  return { fold, test: (l) => alts.some((a) => one(l, a)) };
 }
 
 function grep(body: string, pattern: string, context: number, within: [number, number] | null): string | { error: string } {
-  const test = matcher(pattern);
-  if (typeof test !== "function") return test;
+  const m = matcher(pattern);
+  if ("error" in m) return m;
   if (!body) return "";
+  const lower = m.fold ? body.toLowerCase() : body;
+  const hay = lower.length === body.length ? lower : null;
   const [lo, hi] = within ?? [1, Infinity];
   const total = body.length - (body.endsWith("\n") ? 1 : 0);
   const out: string[] = [];
-  const prev: { n: number; t: string }[] = [];
   let n = 0;
   let pos = 0;
   let shown = 0;
@@ -898,15 +896,21 @@ function grep(body: string, pattern: string, context: number, within: [number, n
   while (pos <= total && n < hi) {
     let nl = body.indexOf("\n", pos);
     if (nl === -1 || nl > total) nl = total;
-    const t = body.slice(pos, nl);
+    const start = pos;
     n++;
     pos = nl + 1;
     if (n < lo) continue;
-    if (test(t)) {
-      if (out.length && (prev[0]?.n ?? n) > shown + 1) out.push("--");
-      for (const p of prev) out.push(`${p.n}-${p.t}`);
-      prev.length = 0;
-      out.push(`${n}:${t}`);
+    if (m.test(hay ? hay.slice(start, nl) : body.slice(start, nl).toLowerCase())) {
+      const first = Math.max(shown + 1, lo, n - context);
+      if (out.length && first > shown + 1) out.push("--");
+      let s = start;
+      for (let k = first; k < n; k++) s = s >= 2 ? body.lastIndexOf("\n", s - 2) + 1 : 0;
+      for (let k = first; k < n; k++) {
+        const e = body.indexOf("\n", s);
+        out.push(`${k}-${body.slice(s, e)}`);
+        s = e + 1;
+      }
+      out.push(`${n}:${body.slice(start, nl)}`);
       shown = n;
       after = context;
       if (out.length > 5000) {
@@ -914,12 +918,9 @@ function grep(body: string, pattern: string, context: number, within: [number, n
         break;
       }
     } else if (after > 0) {
-      out.push(`${n}-${t}`);
+      out.push(`${n}-${body.slice(start, nl)}`);
       shown = n;
       after--;
-    } else if (context > 0) {
-      prev.push({ n, t });
-      if (prev.length > context) prev.shift();
     }
   }
   return out.length ? `${out.join("\n")}\n` : "";
