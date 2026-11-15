@@ -110,7 +110,7 @@ async function save(text = t.value) {
     if (hit) {
       warned = true;
       if (t.value !== text) t.value = text;
-      return say(`looks like a ${hit[1]} · save again to post anyway`, true);
+      return say(`looks like ${hit[1]} · save again to post anyway`, true);
     }
   }
   busy = true;

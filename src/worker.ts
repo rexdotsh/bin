@@ -39,14 +39,14 @@ const LANGS = new Set(Object.values(EXT_LANG));
 const SHEBANG: Record<string, string> = { bash: "bash", sh: "bash", zsh: "bash", python: "python", python3: "python", node: "javascript", bun: "typescript" };
 
 const SECRETS: [RegExp, string][] = [
-  [/\b[sr]k_live_[0-9a-zA-Z]{16,}/, "Stripe key"],
-  [/\b(?:ghp|gho|ghs|ghu|github_pat)_[0-9A-Za-z_]{20,}/, "GitHub token"],
-  [/\bAKIA[0-9A-Z]{16}\b/, "AWS access key"],
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "private key"],
-  [/\bxox[abpr]-[0-9A-Za-z-]{10,}/, "Slack token"],
-  [/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/, "API key"],
-  [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, "JWT"],
-  [/\bAIza[0-9A-Za-z_-]{35}\b/, "Google API key"],
+  [/\b[sr]k_live_[0-9a-zA-Z]{16,}/, "a Stripe key"],
+  [/\b(?:ghp|gho|ghs|ghu|github_pat)_[0-9A-Za-z_]{20,}/, "a GitHub token"],
+  [/\bAKIA[0-9A-Z]{16}\b/, "an AWS access key"],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "a private key"],
+  [/\bxox[abpr]-[0-9A-Za-z-]{10,}/, "a Slack token"],
+  [/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/, "an API key"],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, "a JWT"],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/, "a Google API key"],
 ];
 
 export default {
@@ -768,7 +768,7 @@ const ANY_SECRET = new RegExp(SECRETS.map(([re]) => re.source).join("|"));
 function scanSecrets(body: string): string[] {
   const sample = body.length > SCAN_MAX ? body.slice(0, SCAN_MAX) : body;
   if (!ANY_SECRET.test(sample)) return [];
-  return SECRETS.filter(([re]) => re.test(sample)).map(([, kind]) => `this paste looks like it contains a ${kind}`);
+  return SECRETS.filter(([re]) => re.test(sample)).map(([, kind]) => `this paste looks like it contains ${kind}`);
 }
 
 function isEnvelope(body: string): boolean {
