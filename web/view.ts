@@ -313,7 +313,7 @@ function select(a: number, b: number) {
 
 function fromHash() {
   const m = location.hash.match(/^#L(\d+)(?:-L?(\d+))?$/);
-  if (!m) return;
+  if (!m || !count) return;
   anchor = Number(m[1]);
   select(anchor, Number(m[2] ?? m[1]));
   if (sel) reveal(sel[0]);
