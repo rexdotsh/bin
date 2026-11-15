@@ -23,7 +23,6 @@ const data = JSON.parse($("data").textContent!) as Data;
 const pre = $<HTMLPreElement>("text");
 const BLOCK = 256;
 const CV_MIN = 1000;
-const HITS_MAX = 5000;
 const HL_INLINE = 50_000;
 const MARGIN = 1500;
 
@@ -205,7 +204,7 @@ function paint(i: number) {
   painted[i] = true;
   io?.unobserve(b);
   if (sel && sel[0] <= hi && sel[1] > lo) mark(Math.max(lo + 1, sel[0]), Math.min(hi, sel[1]), "sel", true);
-  for (const n of hits.slice(0, HITS_MAX)) if (n > lo && n <= hi) line(n)?.classList.add("hit");
+  for (const n of hits) if (n > lo && n <= hi) line(n)?.classList.add("hit");
 }
 
 function topRow(): Element | undefined {
@@ -375,7 +374,7 @@ let hitAt = -1;
 let findTimer = 0;
 
 function clearHits() {
-  for (const n of hits.slice(0, HITS_MAX)) line(n)?.classList.remove("hit");
+  for (const n of hits) line(n)?.classList.remove("hit");
   hits = [];
   hitAt = -1;
 }
@@ -396,16 +395,19 @@ function closeBox() {
   clearHits();
 }
 
+function runFind() {
+  findTimer = 0;
+  clearHits();
+  const needle = q.value.toLowerCase();
+  if (needle) plain.forEach((l, i) => l.toLowerCase().includes(needle) && hits.push(i + 1));
+  for (const n of hits) line(n)?.classList.add("hit");
+  $("count").textContent = needle ? `${hits.length}` : "";
+}
+
 q.addEventListener("input", () => {
   if (mode !== "find") return;
   clearTimeout(findTimer);
-  findTimer = setTimeout(() => {
-    clearHits();
-    const needle = q.value.toLowerCase();
-    if (needle) plain.forEach((l, i) => l.toLowerCase().includes(needle) && hits.push(i + 1));
-    for (const n of hits.slice(0, HITS_MAX)) line(n)?.classList.add("hit");
-    $("count").textContent = needle ? `${hits.length}` : "";
-  }, 150);
+  findTimer = setTimeout(runFind, 150);
 });
 
 q.addEventListener("keydown", (e) => {
@@ -420,6 +422,10 @@ q.addEventListener("keydown", (e) => {
       reveal(n);
     }
     return closeBox();
+  }
+  if (findTimer) {
+    clearTimeout(findTimer);
+    runFind();
   }
   if (!hits.length) return;
   hitAt = (hitAt + (e.shiftKey ? -1 : 1) + hits.length) % hits.length;
