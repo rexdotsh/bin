@@ -1,6 +1,6 @@
 import CSS from "../dist/bin.css";
 import { asset, esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
-import { stripAnsi } from "./text";
+import { OSC_LINES_RE, stripAnsi } from "./text";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -207,8 +207,9 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       return single(env, url, id, meta, files[0][1], files[0][2], files[0][0], q, receipt);
     }
     if (!(await budget(files.length + 1, Math.ceil(files.length / 5)))) return busy();
-    const entries: FileEntry[] = files.map(([name, bytes, body]) => {
-      const st = statsOf(bytes);
+    const stats = files.map(([, bytes, body]) => statsOf(bytes, body));
+    const entries: FileEntry[] = files.map(([name, , body], i) => {
+      const st = stats[i];
       return { name, lang: pickLang(null, name, body), lines: Number(st.lines), bytes: Number(st.bytes), tokens: Number(st.tok) };
     });
     meta.kind = "multi";
@@ -222,7 +223,7 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       files.map(([name, bytes], i) =>
         env.BUCKET.put(`p/${placed.id}/${name}`, bytes, {
           httpMetadata: { contentType: "text/plain; charset=utf-8" },
-          customMetadata: { lang: entries[i].lang, ...statsOf(bytes), ...(CONTROL_RE.test(files[i][2]) && { ansi: "1" }) },
+          customMetadata: { lang: entries[i].lang, ...stats[i] },
         }),
       ),
     );
@@ -269,8 +270,7 @@ async function single(
     meta.bytes = String(bytes.byteLength);
     meta.lang = pickLang(q.get("lang"), name, "");
   } else {
-    Object.assign(meta, statsOf(bytes));
-    if (CONTROL_RE.test(body)) meta.ansi = "1";
+    Object.assign(meta, statsOf(bytes, body));
     meta.lang = pickLang(q.get("lang"), name, body);
     warnings = scanSecrets(body);
   }
@@ -553,7 +553,7 @@ async function compare(req: Request, env: Env, ctx: ExecutionContext, url: URL, 
   }
   const [ta, tb] = await Promise.all([x.text(), y.text()]);
   const out = unified(a, b, stripAnsi(ta), stripAnsi(tb));
-  const meta: Meta = { ...statsOf(out), lang: "diff", t: `${a} → ${b}` };
+  const meta: Meta = { ...statsOf(new TextEncoder().encode(out), out), lang: "diff", t: `${a} → ${b}` };
   return present(req, url, `${a}/vs/${b}`, undefined, meta, out, { diff: `${a}/vs/${b}` });
 }
 
@@ -675,36 +675,54 @@ async function purge(env: Env, id: string, meta: Meta) {
 
 // ---------------------------------------------------------------- text tools
 
-function statsOf(src: string | Uint8Array, byteLength?: number): Meta {
+const zeroBytes = (x: number) => ~((x | 0x80808080) - 0x01010101) & ~x & 0x80808080;
+
+function statsOf(bytes: Uint8Array, body: string): Meta {
+  const n = bytes.length;
+  const b = bytes.byteOffset & 3 ? bytes.slice() : bytes;
+  const words = new Int32Array(b.buffer, b.byteOffset, n >> 2);
   let lines = 0;
-  let bytes: number;
-  let last: number;
-  if (typeof src === "string") {
-    for (let i = src.indexOf("\n"); i !== -1; i = src.indexOf("\n", i + 1)) lines++;
-    bytes = byteLength ?? new TextEncoder().encode(src).byteLength;
-    last = src.charCodeAt(src.length - 1);
-  } else {
-    for (let i = src.indexOf(10); i !== -1; i = src.indexOf(10, i + 1)) lines++;
-    bytes = src.byteLength;
-    last = src[src.length - 1];
+  let ctrl = false;
+  let cr = false;
+  for (let k = 0; k < words.length; k++) {
+    const x = words[k];
+    const low = ~((x | 0x80808080) - 0x20202020) & ~x & 0x80808080;
+    const del = zeroBytes(x ^ 0x7f7f7f7f);
+    if (!(low | del)) continue;
+    const nl = zeroBytes(x ^ 0x0a0a0a0a);
+    const crs = zeroBytes(x ^ 0x0d0d0d0d);
+    lines += Math.imul(nl >>> 7, 0x01010101) >>> 24;
+    if ((low & ~(nl | crs | zeroBytes(x ^ 0x09090909))) | del) ctrl = true;
+    // words are little-endian: the byte after a CR is 8 bits up, or the next word's first byte
+    if (crs & ~(nl >>> 8) & 0x808080 || (crs >>> 31 && b[k * 4 + 4] !== 10)) cr = true;
   }
-  if (src.length && last !== 10) lines++;
-  const meta: Meta = { lines: String(lines), bytes: String(bytes), tok: String(Math.ceil(bytes / 4)) };
-  if (typeof src === "string" ? src.includes("\x1b") : src.includes(27)) meta.ansi = "1";
-  if (bareCr(src)) meta.cr = "1";
+  for (let i = words.length * 4; i < n; i++) {
+    const c = b[i];
+    if (c === 10) lines++;
+    else if (c === 13) cr ||= b[i + 1] !== 10;
+    else if ((c < 32 && c !== 9) || c === 127) ctrl = true;
+  }
+  if (ctrl || cr) lines = shownLines(body, lines, ctrl);
+  else if (n && bytes[n - 1] !== 10) lines++;
+  const meta: Meta = { lines: String(lines), bytes: String(n), tok: String(Math.ceil(n / 4)) };
+  if (ctrl) meta.ansi = "1";
+  if (cr) meta.cr = "1";
   return meta;
 }
 
-function bareCr(src: string | Uint8Array): boolean {
-  if (typeof src === "string") {
-    for (let i = src.indexOf("\r"); i !== -1; i = src.indexOf("\r", i + 1)) if (src[i + 1] !== "\n") return true;
-  } else {
-    for (let i = src.indexOf(13); i !== -1; i = src.indexOf(13, i + 1)) if (src[i + 1] !== 10) return true;
+function shownLines(body: string, newlines: number, ctrl: boolean): number {
+  const spans: [number, number][] = [];
+  if (ctrl && body.includes("\x1b]")) {
+    for (const m of body.matchAll(OSC_LINES_RE)) {
+      spans.push([m.index, m.index + m[0].length]);
+      newlines -= m[0].split("\n").length - 1;
+    }
   }
-  return false;
+  let nl = body.lastIndexOf("\n");
+  for (let s = spans.length - 1; s >= 0 && nl >= 0; s--) if (nl > spans[s][0] && nl < spans[s][1]) nl = body.lastIndexOf("\n", spans[s][0]);
+  return newlines + (stripAnsi(body.slice(nl + 1)) ? 1 : 0);
 }
 
-const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 function pickLang(given: string | null, name: string, body: string): string {
   const g = given?.toLowerCase();
   if (g && g !== "auto") return EXT_LANG[g] ?? (LANGS.has(g) ? g : "");
