@@ -716,8 +716,9 @@ function statsOf(bytes: Uint8Array, body: string): Meta {
     const del = zeroBytes(x ^ 0x7f7f7f7f);
     if (!(low | del)) continue;
     const nl = zeroBytes(x ^ 0x0a0a0a0a);
-    const crs = zeroBytes(x ^ 0x0d0d0d0d);
     lines += Math.imul(nl >>> 7, 0x01010101) >>> 24;
+    if (ctrl && cr) continue;
+    const crs = zeroBytes(x ^ 0x0d0d0d0d);
     if ((low & ~(nl | crs | zeroBytes(x ^ 0x09090909))) | del) ctrl = true;
     // words are little-endian: the byte after a CR is 8 bits up, or the next word's first byte
     if (crs & ~(nl >>> 8) & 0x808080 || (crs >>> 31 && b[k * 4 + 4] !== 10)) cr = true;
