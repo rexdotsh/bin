@@ -165,7 +165,7 @@ function rowClass(stripped: string): string {
 
 const row = (stripped: string, inner: string) => `<span class="${rowClass(stripped)}">${inner}</span>`;
 const block = (start: number, rows: string, size: number) =>
-  `<div class="b" style="counter-reset:n ${start}${size < BLOCK ? `;contain-intrinsic-block-size:${size * 24}px` : ""}">${rows}</div>`;
+  `<div class="b" style="--n:${start}${size < BLOCK ? `;contain-intrinsic-block-size:${size * 24}px` : ""}">${rows}</div>`;
 
 function columns(s: string): number {
   if (!/[\t\u1100-\uffff]/.test(s)) return s.length;
