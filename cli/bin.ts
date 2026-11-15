@@ -70,14 +70,6 @@ type Receipt = {
   files?: { name: string; url: string }[];
 };
 
-class HttpError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.status = status;
-  }
-}
-
 const SECRETS: [RegExp, string][] = [
   [/\b[sr]k_live_[0-9a-zA-Z]{16,}/g, "Stripe key"],
   [/\b(?:ghp|gho|ghs|ghu|github_pat)_[0-9A-Za-z_]{20,}/g, "GitHub token"],
@@ -87,7 +79,7 @@ const SECRETS: [RegExp, string][] = [
   [/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/g, "API key"],
   [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "JWT"],
   [/\bAIza[0-9A-Za-z_-]{35}\b/g, "Google API key"],
-  [/^(?:export\s+)?[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*["']?[^\s"'#]{8,}/gm, "secret in an env file"],
+  [/^(?:export\s+)?[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*(?:"(?:[^"\\\n]|\\.){8,}"?|'[^'\n]{8,}'?|[^\s"'#]{8,})/gm, "secret in an env file"],
 ];
 
 process.stdout.on("error", (err: NodeJS.ErrnoException) => {
@@ -129,9 +121,9 @@ async function paste(args: string[]) {
   if (total > MAX_BYTES) throw new Error("over the 5 MB limit");
 
   if (!o.password) {
-    const found = files.flatMap(([n, t]) => findSecrets(t).map((f) => ({ ...f, file: n })));
+    const found = files.flatMap(([n, t]) => findSecrets(t.includes("\x1b") ? t.replace(ANSI, "") : t).map((f) => ({ ...f, file: n })));
     if (found.length && o.redact) {
-      for (const f of files) f[1] = redact(f[1]);
+      for (const f of files) f[1] = makeRedactor()(f[1]);
       process.stderr.write(`bin: masked ${found.length} secret${found.length === 1 ? "" : "s"}\n`);
     } else if (found.length && !o["allow-secrets"]) {
       const lines = found.slice(0, 8).map((f) => `  ${f.file ? `${f.file}:` : "line "}${f.line}  ${f.kind}: ${f.preview}`);
@@ -156,7 +148,8 @@ async function paste(args: string[]) {
     init = { method: "POST", body: files[0][1], headers: { "content-type": "text/plain; charset=utf-8" } };
   } else {
     const boundary = `----bin${randomBytes(12).toString("hex")}`;
-    const quote = (n: string) => n.replace(/"/g, "%22").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+    for (const [n] of files) if (/[\x00-\x1f\x7f]/.test(n)) throw new Error(`file names can't contain control characters: ${JSON.stringify(n)}`);
+    const quote = (n: string) => n.replace(/["\\]/g, "\\$&");
     const parts = files.map(([name, body]) => `--${boundary}\r\ncontent-disposition: form-data; name="${quote(name)}"; filename="${quote(name)}"\r\ncontent-type: text/plain\r\n\r\n${body}\r\n`);
     init = { method: "POST", body: `${parts.join("")}--${boundary}--\r\n`, headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
   }
@@ -346,12 +339,17 @@ async function rm(args: string[]) {
   const { base, id } = locate(cfg, positionals[0]);
   const file = tokenFile(base, id);
   const legacy = ((await readJson(DELETES_FILE)) ?? {}) as Record<string, string>;
-  const saved = (await readText(file))?.trim() || legacy[`${new URL(base).origin}/${id}`];
+  const key = `${new URL(base).origin}/${id}`;
+  const saved = (await readText(file))?.trim() || legacy[key];
   const headers: Record<string, string> = {};
   if (saved) headers["x-delete"] = saved;
   else if (!cfg.token) throw new Error("no delete token for that paste on this machine (and no owner token)");
   const res = await api<{ deleted: string }>(cfg, `${base}/${id}`, { method: "DELETE", headers });
   await removeFile(file, { force: true });
+  if (Object.hasOwn(legacy, key)) {
+    delete legacy[key];
+    await writePrivate(DELETES_FILE, `${JSON.stringify(legacy)}\n`).catch(() => {});
+  }
   if (o.json) return printJson(res);
   console.log(`deleted ${id}`);
 }
@@ -375,7 +373,11 @@ const tokenFile = (origin: string, id: string) => path.join(DELETES_DIR, `${new 
 
 async function remember(r: Receipt) {
   if (!r.delete) return;
-  await writePrivate(tokenFile(r.url, r.id), `${r.delete}\n`);
+  try {
+    await writePrivate(tokenFile(r.url, r.id), `${r.delete}\n`);
+  } catch (err) {
+    process.stderr.write(`bin: couldn't save the delete token (${err instanceof Error ? err.message : err}); to delete ${r.id} later: curl -X DELETE -H 'x-delete: ${r.delete}' ${new URL(r.url).origin}/${r.id}\n`);
+  }
 }
 
 // ---------------------------------------------------------------- secrets + crypto
@@ -423,18 +425,18 @@ function makeRedactor(): (text: string) => string {
     text
       .split("\n")
       .map((line) => {
+        const plain = line.includes("\x1b") ? line.replace(ANSI, "") : line;
         if (inKey) {
-          if (/-----END [A-Z ]*PRIVATE KEY-----/.test(line)) inKey = false;
+          if (/-----END [A-Z ]*PRIVATE KEY-----/.test(plain)) inKey = false;
           return line ? "[redacted private key]" : line;
         }
-        const begin = line.search(/-----BEGIN [A-Z ]*PRIVATE KEY-----/);
+        const begin = plain.search(/-----BEGIN [A-Z ]*PRIVATE KEY-----/);
         if (begin !== -1) {
-          inKey = !/-----END [A-Z ]*PRIVATE KEY-----/.test(line.slice(begin));
-          return `${redact(line.slice(0, begin))}[redacted private key]`;
+          inKey = !/-----END [A-Z ]*PRIVATE KEY-----/.test(plain.slice(begin));
+          return `${redact(plain.slice(0, begin))}[redacted private key]`;
         }
         const once = redact(line);
-        if (once !== line || !line.includes("\x1b")) return once;
-        const plain = line.replace(ANSI, "");
+        if (once !== line || plain === line) return once;
         const clean = redact(plain);
         return clean === plain ? line : clean;
       })
@@ -597,7 +599,7 @@ async function request(cfg: Config, target: string, init: Init = {}): Promise<Re
   for (let hop = 0; hop < 5; hop++) {
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(init.headers ?? {})) headers[k.toLowerCase()] = v;
-    if (url.origin !== first) for (const h of ["x-delete", "x-write"]) delete headers[h];
+    if (url.origin !== first) delete headers["x-delete"];
     if (url.origin === origin && cfg.token) headers.authorization = `Bearer ${cfg.token}`;
     else delete headers.authorization;
     let res: Reply;
@@ -617,8 +619,8 @@ async function request(cfg: Config, target: string, init: Init = {}): Promise<Re
 async function api<T>(cfg: Config, target: string, init: Init = {}): Promise<T> {
   const res = await request(cfg, target, { ...init, headers: { ...init.headers, accept: "application/json" } });
   const body = (await res.json().catch(() => null)) as ({ ok?: boolean; error?: string } & T) | null;
-  if (!body) throw new HttpError(`unexpected HTTP ${res.status} from ${new URL(target, `${cfg.url}/`).origin}`, res.status);
-  if (!res.ok || !body.ok) throw new HttpError(`${body.error || `HTTP ${res.status}`}${res.status === 401 || res.status === 403 ? (cfg.hint ?? "") : ""}`, res.status);
+  if (!body) throw new Error(`unexpected HTTP ${res.status} from ${new URL(target, `${cfg.url}/`).origin}`);
+  if (!res.ok || !body.ok) throw new Error(`${body.error || `HTTP ${res.status}`}${res.status === 401 || res.status === 403 ? (cfg.hint ?? "") : ""}`);
   return body;
 }
 

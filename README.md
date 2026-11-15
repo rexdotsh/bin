@@ -28,7 +28,7 @@ bin rm <id>
 
 ## Setup
 
-1. Create an R2 bucket named `bin`.
+1. Create an R2 bucket named `bin-apac` (or change `bucket_name` in `wrangler.jsonc`).
 2. Workers & Pages → import this repo. Deploy command `bunx wrangler deploy`, build variable `BUN_VERSION=1.4.0`. Put your domain in `wrangler.jsonc` (`routes`), `DEFAULT_URL` in `cli/bin.ts`, `base` in `cli/install.sh`, and the URLs in `public/llms.txt` and the skill.
 3. Optional, for bigger pastes and no rate limit: `bin setup` from a checkout sets the owner token (`BIN_TOKEN`) on the Worker.
 
@@ -37,7 +37,7 @@ bin rm <id>
 ```sh
 bun install
 printf 'BIN_TOKEN=dev\n' > .dev.vars
-bun run build && bun run dev
+bun run dev
 echo hello | curl --data-binary @- http://127.0.0.1:8787
 ```
 
