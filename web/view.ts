@@ -163,7 +163,7 @@ function rowClass(stripped: string): string {
   return "l";
 }
 
-const row = (stripped: string, inner: string) => `<span class="${rowClass(stripped)}">${inner}</span>`;
+const row = (stripped: string, inner: string) => `<span class="${rowClass(stripped)}">${inner || "\n"}</span>`;
 const block = (start: number, rows: string, size: number) =>
   `<div class="b" style="--n:${start}${size < BLOCK ? `;contain-intrinsic-block-size:${size * 24}px` : ""}">${rows}</div>`;
 
@@ -216,7 +216,7 @@ function rewrap() {
     const b = pre.children[i] as HTMLElement;
     const r = b.getBoundingClientRect();
     if (!done || (r.bottom > -MARGIN && r.top < innerHeight + MARGIN)) return;
-    b.textContent = plain.slice(i * BLOCK, (i + 1) * BLOCK).join("\n");
+    b.textContent = plain.slice(i * BLOCK, (i + 1) * BLOCK).join("\n") + "\n";
     painted[i] = false;
     io!.observe(b);
   });
@@ -242,7 +242,7 @@ async function fill() {
       for (let k = i; k < end; k++) scan(st, lines[k]);
     }
     for (let k = i; k < end; k++) widest = Math.max(widest, columns(plain[k]));
-    out.push(block(i, lazy ? esc(plain.slice(i, end).join("\n")) : "", end - i));
+    out.push(block(i, lazy ? esc(plain.slice(i, end).join("\n") + "\n") : "", end - i));
     if (performance.now() - t > 30) {
       await tick();
       t = performance.now();
