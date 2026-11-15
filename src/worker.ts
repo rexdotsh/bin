@@ -79,8 +79,9 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
   if (m === "PUT" && parts.length === 1) return create(req, env, url, parts[0]);
 
   const [first, ...rest] = parts;
-  if (first === "a") {
-    const current = asset(rest.join("/").replace(/\.[0-9a-f]{8}\.js$/, ".js"));
+  if (first === "a" || first === "fonts") {
+    const unhash = (p: string) => p.replace(/\.[0-9a-f]{8}(\.woff2)$/, "$1");
+    const current = first === "a" ? asset(rest.join("/").replace(/\.[0-9a-f]{8}\.js$/, ".js")) : FONT_FILES.find((f) => unhash(f) === unhash(url.pathname));
     if (!current || current === url.pathname) return notFound(req);
     return new Response(null, { status: 307, headers: { location: current } });
   }
@@ -1116,7 +1117,8 @@ ${options("ttl", "Expires", [["never", "never"], ["1h", "in 1 hour"], ["1d", "in
 </body></html>`);
 }
 
-const FONTS = [...CSS.matchAll(/url\("?(\/fonts\/[^)"]+)"?\)/g)].map((m) => m[1]).filter((f) => !f.includes("-ext."));
+const FONT_FILES = [...CSS.matchAll(/url\("?(\/fonts\/[^)"]+)"?\)/g)].map((m) => m[1]);
+const FONTS = FONT_FILES.filter((f) => !f.includes("-ext."));
 
 function head(req: Request, title: string, extra: string, script?: string): string {
   const theme = themeOf(req);
