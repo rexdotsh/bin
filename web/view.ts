@@ -416,7 +416,7 @@ q.addEventListener("keydown", (e) => {
   e.preventDefault();
   if (mode === "line") {
     const n = Number(q.value);
-    if (n >= 1 && n <= count) {
+    if (Number.isSafeInteger(n) && n >= 1 && n <= count) {
       anchor = n;
       select(n, n);
       reveal(n);
