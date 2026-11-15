@@ -559,11 +559,17 @@ async function compare(req: Request, env: Env, ctx: ExecutionContext, url: URL, 
 
 type Op = [-1 | 0 | 1, string];
 
+const diffLines = (s: string) => {
+  const lines = s.split("\n");
+  if (s.endsWith("\n") || !s) lines.pop();
+  else lines[lines.length - 1] += "\n";
+  return lines;
+};
+const hunkRange = (start: number, n: number) => (n === 1 ? `${start}` : `${n ? start : start - 1},${n}`);
+
 function unified(an: string, bn: string, a: string, b: string): string {
-  const al = a.split("\n");
-  const bl = b.split("\n");
-  if (a.endsWith("\n")) al.pop();
-  if (b.endsWith("\n")) bl.pop();
+  const al = diffLines(a);
+  const bl = diffLines(b);
   let pre = 0;
   while (pre < al.length && pre < bl.length && al[pre] === bl[pre]) pre++;
   let suf = 0;
@@ -602,8 +608,11 @@ function unified(an: string, bn: string, a: string, b: string): string {
     const hunk = ops.slice(start, end);
     const na = hunk.filter(([t]) => t <= 0).length;
     const nb = hunk.filter(([t]) => t >= 0).length;
-    out.push(`@@ -${sa},${na} +${sb},${nb} @@`);
-    for (const [t, line] of hunk) out.push(`${t === 0 ? " " : t < 0 ? "-" : "+"}${line}`);
+    out.push(`@@ -${hunkRange(sa, na)} +${hunkRange(sb, nb)} @@`);
+    for (const [t, line] of hunk) {
+      const mark = t === 0 ? " " : t < 0 ? "-" : "+";
+      out.push(line.endsWith("\n") ? `${mark}${line.slice(0, -1)}\n\\ No newline at end of file` : `${mark}${line}`);
+    }
     for (let k = i; k < end; k++) {
       if (ops[k][0] <= 0) ai++;
       if (ops[k][0] >= 0) bi++;
