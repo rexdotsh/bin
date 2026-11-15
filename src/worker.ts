@@ -616,6 +616,18 @@ function unified(an: string, bn: string, a: string, b: string): string {
 function myers(a: string[], b: string[]): Op[] | null {
   const n = a.length;
   const m = b.length;
+  const ids = new Map<string, number>();
+  const intern = (lines: string[]) => {
+    const out = new Int32Array(lines.length);
+    for (let i = 0; i < lines.length; i++) {
+      let v = ids.get(lines[i]);
+      if (v === undefined) ids.set(lines[i], (v = ids.size));
+      out[i] = v;
+    }
+    return out;
+  };
+  const ai = intern(a);
+  const bi = intern(b);
   const off = n + m + 1;
   const v = new Int32Array(2 * off + 2);
   const trace: Int32Array[] = [];
@@ -625,7 +637,7 @@ function myers(a: string[], b: string[]): Op[] | null {
     for (let k = -d; k <= d; k += 2) {
       let x = k === -d || (k !== d && v[off + k - 1] < v[off + k + 1]) ? v[off + k + 1] : v[off + k - 1] + 1;
       let y = x - k;
-      while (x < n && y < m && a[x] === b[y]) {
+      while (x < n && y < m && ai[x] === bi[y]) {
         x++;
         y++;
       }
