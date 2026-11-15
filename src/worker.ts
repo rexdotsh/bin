@@ -462,7 +462,7 @@ function rawResponse(body: ReadableStream | string, meta: Meta, id: string, mode
   if (mode === "dl") {
     const name = (meta.name || `${id}.${meta.enc ? "json" : "txt"}`).split("/").pop()!.replace(/[^\w.+-]/g, "_");
     const full = (meta.name || "").split("/").pop() || name;
-    headers.set("content-disposition", `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(full)}`);
+    headers.set("content-disposition", `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(full).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`);
   }
   return new Response(body, { headers });
 }
