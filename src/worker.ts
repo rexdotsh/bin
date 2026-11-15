@@ -1045,7 +1045,7 @@ ${html}
 </body></html>`);
 }
 
-const TAB_RULE = { source: "document", where: { selector_matches: ".tabs a" }, eagerness: "moderate" };
+const TAB_RULE = { source: "document", where: { selector_matches: ".tabs a:not([aria-current])" }, eagerness: "moderate" };
 const TAB_RULES = JSON.stringify({ prefetch: [TAB_RULE], prerender: [TAB_RULE] });
 
 function composePage(req: Request): Response {
