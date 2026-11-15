@@ -465,8 +465,11 @@ $("qx").addEventListener("click", closeBox);
 
 // ---------------------------------------------------------------- start
 
-if (data.enc) {
-  const form = $<HTMLFormElement>("unlock");
+const load = (src: string) => fetch(src).then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))));
+const form = document.querySelector<HTMLFormElement>("#unlock");
+
+if (form) {
+  const envelope = data.enc ?? load(data.src!).catch(() => null);
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const pw = $<HTMLInputElement>("pw");
@@ -474,9 +477,14 @@ if (data.enc) {
     if (btn.disabled) return;
     btn.disabled = true;
     $("pwerr").hidden = true;
+    const env = await envelope;
+    if (env === null) {
+      btn.disabled = false;
+      return toast("couldn't load this paste");
+    }
     let text: string;
     try {
-      text = await decrypt(data.enc!, pw.value);
+      text = await decrypt(env, pw.value);
     } catch {
       btn.disabled = false;
       $("pwerr").hidden = false;
@@ -492,7 +500,7 @@ if (data.enc) {
   });
 } else {
   const source = data.src
-    ? fetch(data.src).then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+    ? load(data.src)
     : Promise.resolve(document.querySelector<HTMLTemplateElement>("#ansi")?.content.textContent ?? pre.textContent ?? "");
   source.then(render, () => toast("couldn't load this paste"));
 }

@@ -437,7 +437,7 @@ async function readBody(
 }
 
 async function viewText(req: Request, url: URL, meta: Meta, obj: R2ObjectBody): Promise<string> {
-  if (meta.enc === "1" || !(Number(meta.bytes) > INLINE_MAX) || slicing(url) || !wantsHtml(req)) return obj.text();
+  if (!(Number(meta.bytes) > INLINE_MAX) || slicing(url) || !wantsHtml(req)) return obj.text();
   await obj.body.cancel();
   return "";
 }
@@ -1014,7 +1014,7 @@ function viewer(
   extra: { files?: FileEntry[]; file?: string; diff?: string },
 ): Response {
   const enc = meta.enc === "1";
-  const inline = enc || Number(meta.bytes || body.length) <= INLINE_MAX;
+  const inline = Number(meta.bytes || body.length) <= INLINE_MAX;
   const ansi = inline && !enc && (meta.ansi === "1" || (extra.file !== undefined && body.includes("\x1b")));
   const hl = inline && !enc ? (ansi ? null : hlModules(meta.lang || "", body)) : undefined;
   const heading = meta.t || meta.name || "";
@@ -1026,13 +1026,13 @@ function viewer(
     meta,
     text: enc || !inline ? undefined : stripAnsi(body),
     ansi: ansi ? body : undefined,
-    enc: enc ? body : undefined,
+    enc: enc && inline ? body : undefined,
     files: extra.files,
     file: extra.file,
     diff: extra.diff,
     hl,
   });
-  const desc = inline ? preview(body, meta) : `${Number(meta.lines || 0).toLocaleString("en")} lines`;
+  const desc = inline || enc ? preview(body, meta) : `${Number(meta.lines || 0).toLocaleString("en")} lines`;
   const raw = extra.diff ? "" : `/raw/${id}${extra.file ? `/${segments(extra.file)}` : ""}`;
   const tabs = extra.files ? `<script type="speculationrules">${TAB_RULES}</script>` : "";
   const src = inline || !raw ? "" : `<link rel="preload" href="${raw}" as="fetch" crossorigin>`;
