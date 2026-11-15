@@ -1163,7 +1163,6 @@ function wantsHtml(req: Request): boolean {
 }
 
 function harden(res: Response): Response {
-  if (res.status === 101) return res;
   const out = new Response(res.body, res);
   const h = out.headers;
   h.set("x-content-type-options", "nosniff");
