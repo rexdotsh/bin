@@ -17,7 +17,7 @@ Read
   GET /<id>?digest                   a log's errors, warnings, summary and tail, with line numbers
   GET /<id>/<file>                   one file of a multi-file paste (GET /<id> lists them)
   GET /raw/<id>                      the exact bytes;  /dl/<id> downloads them
-  GET /<a>/vs/<b>                    a unified diff of two pastes
+  GET /<a>/vs/<b>                    a unified diff of two pastes, like diff -u
   Response headers: x-bin-lines, x-bin-tokens (rough), x-bin-lang, x-bin-exit, x-bin-duration-ms,
   x-bin-range (for slices), x-bin-encrypted, x-bin-hint (big pastes); x-bin-title, x-bin-name and
   x-bin-command are URL-encoded. HEAD gives the headers without the body.
