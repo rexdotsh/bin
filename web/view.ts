@@ -28,6 +28,7 @@ const MARGIN = 1500;
 
 let plain: string[] = [];
 let count = 0;
+let ready = false;
 let eol = true;
 let sel: [number, number] | null = null;
 let anchor = 0;
@@ -282,6 +283,7 @@ async function render(raw: string) {
   ({ raw: lines, plain, eol } = toLines(raw));
   ansi = raw.includes("\x1b");
   count = lines.length;
+  ready = true;
   const mods = ansi ? null : data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
   const text = mods ? plain.join("\n") : "";
   if (mods && mods.length > 1 && text.length < HL_INLINE) hlRows = await highlight(mods, data.lang, text);
@@ -340,7 +342,13 @@ pre.addEventListener("click", (e) => {
 
 const textOf = (a: number, b: number) => plain.slice(a - 1, b).join("\n") + (b >= a && (b < count || eol) ? "\n" : "");
 
+function loaded(): boolean {
+  if (!ready) toast(document.getElementById("unlock") ? "unlock it first" : "still loading");
+  return ready;
+}
+
 async function copy() {
+  if (!loaded()) return;
   try {
     await navigator.clipboard.writeText(sel ? textOf(sel[0], sel[1]) : textOf(1, count));
     toast(sel ? `copied lines ${sel[0]}–${sel[1]}` : "copied");
@@ -446,6 +454,7 @@ document.addEventListener("keydown", (e) => {
     "/": () => openBox("find"),
     g: () => openBox("line"),
     e: () => {
+      if (!loaded()) return;
       if (store("sessionStorage", "bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }))) location.href = "/";
       else toast("couldn't open this in the editor");
     },
