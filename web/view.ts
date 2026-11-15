@@ -208,11 +208,20 @@ function paint(i: number) {
   for (const n of hits.slice(0, HITS_MAX)) if (n > lo && n <= hi) line(n)?.classList.add("hit");
 }
 
+function topRow(): Element | undefined {
+  for (const b of pre.children) {
+    if (b.getBoundingClientRect().bottom <= 0) continue;
+    return [...b.children].find((l) => l.getBoundingClientRect().bottom > 0) ?? b;
+  }
+}
+
 function rewrap() {
+  const top = topRow();
+  const was = top?.getBoundingClientRect().top ?? 0;
   const on = document.body.classList.toggle("wrap-on");
   setCookie("wrap", on ? "1" : "0");
-  if (!io) return;
-  painted.forEach((done, i) => {
+  if (top) scrollBy(0, top.getBoundingClientRect().top - was);
+  if (io) painted.forEach((done, i) => {
     const b = pre.children[i] as HTMLElement;
     const r = b.getBoundingClientRect();
     if (!done || (r.bottom > -MARGIN && r.top < innerHeight + MARGIN)) return;
