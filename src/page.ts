@@ -18,7 +18,7 @@ export type View = {
   hl?: string[] | null;
 };
 
-export const asset = (name: string): string => (ASSETS as Record<string, string>)[name];
+export const asset = (name: string): string => (Object.hasOwn(ASSETS, name) ? (ASSETS as Record<string, string>)[name] : "");
 
 export const INLINE_MAX = 512 * 1024;
 export const LINE_PX = 24;
@@ -38,7 +38,8 @@ function looksLikeCode(text: string): boolean {
 export function hlModules(lang: string, text: string): string[] | null {
   if (text.length > HL_MAX || NO_HL.has(lang)) return null;
   if (!lang) return looksLikeCode(text) ? [asset("hl/auto.js")] : null;
-  return [asset("hl/core.js"), asset(`hl/${lang}.js`)];
+  const mod = asset(`hl/${lang}.js`);
+  return mod ? [asset("hl/core.js"), mod] : null;
 }
 
 export const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);

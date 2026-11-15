@@ -36,6 +36,7 @@ const EXT_LANG: Record<string, string> = {
   dockerfile: "dockerfile", makefile: "makefile",
 };
 const LANGS = new Set(Object.values(EXT_LANG));
+const SHEBANG: Record<string, string> = { bash: "bash", sh: "bash", zsh: "bash", python: "python", python3: "python", node: "javascript", bun: "typescript" };
 
 const SECRETS: [RegExp, string][] = [
   [/\b[sr]k_live_[0-9a-zA-Z]{16,}/, "Stripe key"],
@@ -746,7 +747,7 @@ function shownLines(body: string, newlines: number, ctrl: boolean): number {
 
 function pickLang(given: string | null, name: string, body: string): string {
   const g = given?.toLowerCase();
-  if (g && g !== "auto") return EXT_LANG[g] ?? (LANGS.has(g) ? g : "");
+  if (g && g !== "auto") return Object.hasOwn(EXT_LANG, g) ? EXT_LANG[g] : LANGS.has(g) ? g : "";
   const base = name.split("/").pop()!.toLowerCase();
   if (base === "dockerfile" || base === "makefile") return base;
   const ext = base.includes(".") ? base.split(".").pop()! : "";
@@ -754,7 +755,7 @@ function pickLang(given: string | null, name: string, body: string): string {
   const head = body.slice(0, 2048);
   if (/^\uFEFF?diff --git /.test(head) || (/^--- /m.test(head) && /^\+\+\+ /m.test(head) && /^@@ /m.test(head))) return "diff";
   const shebang = head.match(/^\uFEFF?#!(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?(\w+)/);
-  if (shebang) return { bash: "bash", sh: "bash", zsh: "bash", python: "python", python3: "python", node: "javascript", bun: "typescript" }[shebang[1]] ?? "";
+  if (shebang) return Object.hasOwn(SHEBANG, shebang[1]) ? SHEBANG[shebang[1]] : "";
   if (head.includes("\x1b[")) return "log";
   return "";
 }
