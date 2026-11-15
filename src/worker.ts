@@ -1,6 +1,6 @@
 import CSS from "../dist/bin.css";
 import { asset, esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
-import { stripAnsi } from "./text";
+import { OSC_LINES_RE, stripAnsi } from "./text";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -36,16 +36,17 @@ const EXT_LANG: Record<string, string> = {
   dockerfile: "dockerfile", makefile: "makefile",
 };
 const LANGS = new Set(Object.values(EXT_LANG));
+const SHEBANG: Record<string, string> = { bash: "bash", sh: "bash", zsh: "bash", python: "python", python3: "python", node: "javascript", bun: "typescript" };
 
 const SECRETS: [RegExp, string][] = [
-  [/\b[sr]k_live_[0-9a-zA-Z]{16,}/, "Stripe key"],
-  [/\b(?:ghp|gho|ghs|ghu|github_pat)_[0-9A-Za-z_]{20,}/, "GitHub token"],
-  [/\bAKIA[0-9A-Z]{16}\b/, "AWS access key"],
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "private key"],
-  [/\bxox[abpr]-[0-9A-Za-z-]{10,}/, "Slack token"],
-  [/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/, "API key"],
-  [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, "JWT"],
-  [/\bAIza[0-9A-Za-z_-]{35}\b/, "Google API key"],
+  [/\b[sr]k_live_[0-9a-zA-Z]{16,}/, "a Stripe key"],
+  [/\b(?:ghp|gho|ghs|ghu|github_pat)_[0-9A-Za-z_]{20,}/, "a GitHub token"],
+  [/\bAKIA[0-9A-Z]{16}\b/, "an AWS access key"],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "a private key"],
+  [/\bxox[abpr]-[0-9A-Za-z-]{10,}/, "a Slack token"],
+  [/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/, "an API key"],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, "a JWT"],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/, "a Google API key"],
 ];
 
 export default {
@@ -78,8 +79,9 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
   if (m === "PUT" && parts.length === 1) return create(req, env, url, parts[0]);
 
   const [first, ...rest] = parts;
-  if (first === "a") {
-    const current = asset(rest.join("/").replace(/\.[0-9a-f]{8}\.js$/, ".js"));
+  if (first === "a" || first === "fonts") {
+    const unhash = (p: string) => p.replace(/\.[0-9a-f]{8}(\.woff2)$/, "$1");
+    const current = first === "a" ? asset(rest.join("/").replace(/\.[0-9a-f]{8}\.js$/, ".js")) : FONT_FILES.find((f) => unhash(f) === unhash(url.pathname));
     if (!current || current === url.pathname) return notFound(req);
     return new Response(null, { status: 307, headers: { location: current } });
   }
@@ -207,8 +209,9 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       return single(env, url, id, meta, files[0][1], files[0][2], files[0][0], q, receipt);
     }
     if (!(await budget(files.length + 1, Math.ceil(files.length / 5)))) return busy();
-    const entries: FileEntry[] = files.map(([name, bytes, body]) => {
-      const st = statsOf(bytes);
+    const stats = files.map(([, bytes, body]) => statsOf(bytes, body));
+    const entries: FileEntry[] = files.map(([name, , body], i) => {
+      const st = stats[i];
       return { name, lang: pickLang(null, name, body), lines: Number(st.lines), bytes: Number(st.bytes), tokens: Number(st.tok) };
     });
     meta.kind = "multi";
@@ -222,7 +225,7 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       files.map(([name, bytes], i) =>
         env.BUCKET.put(`p/${placed.id}/${name}`, bytes, {
           httpMetadata: { contentType: "text/plain; charset=utf-8" },
-          customMetadata: { lang: entries[i].lang, ...statsOf(bytes), ...(CONTROL_RE.test(files[i][2]) && { ansi: "1" }) },
+          customMetadata: { lang: entries[i].lang, ...stats[i] },
         }),
       ),
     );
@@ -269,8 +272,7 @@ async function single(
     meta.bytes = String(bytes.byteLength);
     meta.lang = pickLang(q.get("lang"), name, "");
   } else {
-    Object.assign(meta, statsOf(bytes));
-    if (CONTROL_RE.test(body)) meta.ansi = "1";
+    Object.assign(meta, statsOf(bytes, body));
     meta.lang = pickLang(q.get("lang"), name, body);
     warnings = scanSecrets(body);
   }
@@ -437,10 +439,13 @@ async function readBody(
 }
 
 async function viewText(req: Request, url: URL, meta: Meta, obj: R2ObjectBody): Promise<string> {
-  if (!(Number(meta.bytes) > INLINE_MAX) || slicing(url) || !wantsHtml(req)) return obj.text();
+  if (!(Number(meta.bytes) > INLINE_MAX) || slicing(url) || !wantsHtml(req)) return textOf(obj);
   await obj.body.cancel();
   return "";
 }
+
+const UTF8 = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+const textOf = async (obj: R2ObjectBody) => UTF8.decode(await obj.arrayBuffer());
 
 function streamable(req: Request, url: URL, meta: Meta): boolean {
   return !meta.ansi && !meta.cr && !meta.enc && meta.lines !== undefined && !slicing(url) && !wantsHtml(req);
@@ -458,7 +463,7 @@ function rawResponse(body: ReadableStream | string, meta: Meta, id: string, mode
   if (mode === "dl") {
     const name = (meta.name || `${id}.${meta.enc ? "json" : "txt"}`).split("/").pop()!.replace(/[^\w.+-]/g, "_");
     const full = (meta.name || "").split("/").pop() || name;
-    headers.set("content-disposition", `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(full)}`);
+    headers.set("content-disposition", `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(full).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`);
   }
   return new Response(body, { headers });
 }
@@ -551,19 +556,25 @@ async function compare(req: Request, env: Env, ctx: ExecutionContext, url: URL, 
     if (m.kind || m.enc) return refuse(400, "only plain single-file pastes can be compared");
     if (Number(m.bytes) > 512_000 || Number(m.lines) > 5000) return refuse(400, "too big to compare (over 500 KB or 5,000 lines)");
   }
-  const [ta, tb] = await Promise.all([x.text(), y.text()]);
+  const [ta, tb] = await Promise.all([textOf(x), textOf(y)]);
   const out = unified(a, b, stripAnsi(ta), stripAnsi(tb));
-  const meta: Meta = { ...statsOf(out), lang: "diff", t: `${a} → ${b}` };
+  const meta: Meta = { ...statsOf(new TextEncoder().encode(out), out), lang: "diff", t: `${a} → ${b}` };
   return present(req, url, `${a}/vs/${b}`, undefined, meta, out, { diff: `${a}/vs/${b}` });
 }
 
 type Op = [-1 | 0 | 1, string];
 
+const diffLines = (s: string) => {
+  const lines = s.split("\n");
+  if (s.endsWith("\n") || !s) lines.pop();
+  else lines[lines.length - 1] += "\n";
+  return lines;
+};
+const hunkRange = (start: number, n: number) => (n === 1 ? `${start}` : `${n ? start : start - 1},${n}`);
+
 function unified(an: string, bn: string, a: string, b: string): string {
-  const al = a.split("\n");
-  const bl = b.split("\n");
-  if (a.endsWith("\n")) al.pop();
-  if (b.endsWith("\n")) bl.pop();
+  const al = diffLines(a);
+  const bl = diffLines(b);
   let pre = 0;
   while (pre < al.length && pre < bl.length && al[pre] === bl[pre]) pre++;
   let suf = 0;
@@ -602,8 +613,11 @@ function unified(an: string, bn: string, a: string, b: string): string {
     const hunk = ops.slice(start, end);
     const na = hunk.filter(([t]) => t <= 0).length;
     const nb = hunk.filter(([t]) => t >= 0).length;
-    out.push(`@@ -${sa},${na} +${sb},${nb} @@`);
-    for (const [t, line] of hunk) out.push(`${t === 0 ? " " : t < 0 ? "-" : "+"}${line}`);
+    out.push(`@@ -${hunkRange(sa, na)} +${hunkRange(sb, nb)} @@`);
+    for (const [t, line] of hunk) {
+      const mark = t === 0 ? " " : t < 0 ? "-" : "+";
+      out.push(line.endsWith("\n") ? `${mark}${line.slice(0, -1)}\n\\ No newline at end of file` : `${mark}${line}`);
+    }
     for (let k = i; k < end; k++) {
       if (ops[k][0] <= 0) ai++;
       if (ops[k][0] >= 0) bi++;
@@ -616,6 +630,18 @@ function unified(an: string, bn: string, a: string, b: string): string {
 function myers(a: string[], b: string[]): Op[] | null {
   const n = a.length;
   const m = b.length;
+  const ids = new Map<string, number>();
+  const intern = (lines: string[]) => {
+    const out = new Int32Array(lines.length);
+    for (let i = 0; i < lines.length; i++) {
+      let v = ids.get(lines[i]);
+      if (v === undefined) ids.set(lines[i], (v = ids.size));
+      out[i] = v;
+    }
+    return out;
+  };
+  const ai = intern(a);
+  const bi = intern(b);
   const off = n + m + 1;
   const v = new Int32Array(2 * off + 2);
   const trace: Int32Array[] = [];
@@ -625,7 +651,7 @@ function myers(a: string[], b: string[]): Op[] | null {
     for (let k = -d; k <= d; k += 2) {
       let x = k === -d || (k !== d && v[off + k - 1] < v[off + k + 1]) ? v[off + k + 1] : v[off + k - 1] + 1;
       let y = x - k;
-      while (x < n && y < m && a[x] === b[y]) {
+      while (x < n && y < m && ai[x] === bi[y]) {
         x++;
         y++;
       }
@@ -675,39 +701,58 @@ async function purge(env: Env, id: string, meta: Meta) {
 
 // ---------------------------------------------------------------- text tools
 
-function statsOf(src: string | Uint8Array, byteLength?: number): Meta {
+const zeroBytes = (x: number) => ~((x | 0x80808080) - 0x01010101) & ~x & 0x80808080;
+
+function statsOf(bytes: Uint8Array, body: string): Meta {
+  const n = bytes.length;
+  const b = bytes.byteOffset & 3 ? bytes.slice() : bytes;
+  const words = new Int32Array(b.buffer, b.byteOffset, n >> 2);
   let lines = 0;
-  let bytes: number;
-  let last: number;
-  if (typeof src === "string") {
-    for (let i = src.indexOf("\n"); i !== -1; i = src.indexOf("\n", i + 1)) lines++;
-    bytes = byteLength ?? new TextEncoder().encode(src).byteLength;
-    last = src.charCodeAt(src.length - 1);
-  } else {
-    for (let i = src.indexOf(10); i !== -1; i = src.indexOf(10, i + 1)) lines++;
-    bytes = src.byteLength;
-    last = src[src.length - 1];
+  let ctrl = false;
+  let cr = false;
+  for (let k = 0; k < words.length; k++) {
+    const x = words[k];
+    const low = ~((x | 0x80808080) - 0x20202020) & ~x & 0x80808080;
+    const del = zeroBytes(x ^ 0x7f7f7f7f);
+    if (!(low | del)) continue;
+    const nl = zeroBytes(x ^ 0x0a0a0a0a);
+    lines += Math.imul(nl >>> 7, 0x01010101) >>> 24;
+    if (ctrl && cr) continue;
+    const crs = zeroBytes(x ^ 0x0d0d0d0d);
+    if ((low & ~(nl | crs | zeroBytes(x ^ 0x09090909))) | del) ctrl = true;
+    // words are little-endian: the byte after a CR is 8 bits up, or the next word's first byte
+    if (crs & ~(nl >>> 8) & 0x808080 || (crs >>> 31 && b[k * 4 + 4] !== 10)) cr = true;
   }
-  if (src.length && last !== 10) lines++;
-  const meta: Meta = { lines: String(lines), bytes: String(bytes), tok: String(Math.ceil(bytes / 4)) };
-  if (typeof src === "string" ? src.includes("\x1b") : src.includes(27)) meta.ansi = "1";
-  if (bareCr(src)) meta.cr = "1";
+  for (let i = words.length * 4; i < n; i++) {
+    const c = b[i];
+    if (c === 10) lines++;
+    else if (c === 13) cr ||= b[i + 1] !== 10;
+    else if ((c < 32 && c !== 9) || c === 127) ctrl = true;
+  }
+  if (ctrl || cr) lines = shownLines(body, lines, ctrl);
+  else if (n && bytes[n - 1] !== 10) lines++;
+  const meta: Meta = { lines: String(lines), bytes: String(n), tok: String(Math.ceil(n / 4)) };
+  if (ctrl) meta.ansi = "1";
+  if (cr) meta.cr = "1";
   return meta;
 }
 
-function bareCr(src: string | Uint8Array): boolean {
-  if (typeof src === "string") {
-    for (let i = src.indexOf("\r"); i !== -1; i = src.indexOf("\r", i + 1)) if (src[i + 1] !== "\n") return true;
-  } else {
-    for (let i = src.indexOf(13); i !== -1; i = src.indexOf(13, i + 1)) if (src[i + 1] !== 10) return true;
+function shownLines(body: string, newlines: number, ctrl: boolean): number {
+  const spans: [number, number][] = [];
+  if (ctrl && body.includes("\x1b]")) {
+    for (const m of body.matchAll(OSC_LINES_RE)) {
+      spans.push([m.index, m.index + m[0].length]);
+      newlines -= m[0].split("\n").length - 1;
+    }
   }
-  return false;
+  let nl = body.lastIndexOf("\n");
+  for (let s = spans.length - 1; s >= 0 && nl >= 0; s--) if (nl > spans[s][0] && nl < spans[s][1]) nl = body.lastIndexOf("\n", spans[s][0]);
+  return newlines + (stripAnsi(body.slice(nl + 1)) ? 1 : 0);
 }
 
-const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 function pickLang(given: string | null, name: string, body: string): string {
   const g = given?.toLowerCase();
-  if (g && g !== "auto") return EXT_LANG[g] ?? (LANGS.has(g) ? g : "");
+  if (g && g !== "auto") return Object.hasOwn(EXT_LANG, g) ? EXT_LANG[g] : LANGS.has(g) ? g : "";
   const base = name.split("/").pop()!.toLowerCase();
   if (base === "dockerfile" || base === "makefile") return base;
   const ext = base.includes(".") ? base.split(".").pop()! : "";
@@ -715,7 +760,7 @@ function pickLang(given: string | null, name: string, body: string): string {
   const head = body.slice(0, 2048);
   if (/^\uFEFF?diff --git /.test(head) || (/^--- /m.test(head) && /^\+\+\+ /m.test(head) && /^@@ /m.test(head))) return "diff";
   const shebang = head.match(/^\uFEFF?#!(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?(\w+)/);
-  if (shebang) return { bash: "bash", sh: "bash", zsh: "bash", python: "python", python3: "python", node: "javascript", bun: "typescript" }[shebang[1]] ?? "";
+  if (shebang) return Object.hasOwn(SHEBANG, shebang[1]) ? SHEBANG[shebang[1]] : "";
   if (head.includes("\x1b[")) return "log";
   return "";
 }
@@ -725,7 +770,7 @@ const ANY_SECRET = new RegExp(SECRETS.map(([re]) => re.source).join("|"));
 function scanSecrets(body: string): string[] {
   const sample = body.length > SCAN_MAX ? body.slice(0, SCAN_MAX) : body;
   if (!ANY_SECRET.test(sample)) return [];
-  return SECRETS.filter(([re]) => re.test(sample)).map(([, kind]) => `this paste looks like it contains a ${kind}`);
+  return SECRETS.filter(([re]) => re.test(sample)).map(([, kind]) => `this paste looks like it contains ${kind}`);
 }
 
 function isEnvelope(body: string): boolean {
@@ -796,7 +841,7 @@ function range(spec: string | null): [number, number] | null {
 
 type Alt = { start: boolean; end: boolean; pieces: string[] };
 
-function matcher(pattern: string): ((line: string) => boolean) | { error: string } {
+function matcher(pattern: string): { fold: boolean; test: (line: string) => boolean } | { error: string } {
   if (!pattern) return { error: "grep needs a pattern" };
   if (pattern.length > 300) return { error: "grep patterns are limited to 300 characters" };
   const fold = !/[A-Z]/.test(pattern);
@@ -847,20 +892,18 @@ function matcher(pattern: string): ((line: string) => boolean) | { error: string
     }
     return true;
   };
-  return (line) => {
-    const l = fold ? line.toLowerCase() : line;
-    return alts.some((a) => one(l, a));
-  };
+  return { fold, test: (l) => alts.some((a) => one(l, a)) };
 }
 
 function grep(body: string, pattern: string, context: number, within: [number, number] | null): string | { error: string } {
-  const test = matcher(pattern);
-  if (typeof test !== "function") return test;
+  const m = matcher(pattern);
+  if ("error" in m) return m;
   if (!body) return "";
+  const lower = m.fold ? body.toLowerCase() : body;
+  const hay = lower.length === body.length ? lower : null;
   const [lo, hi] = within ?? [1, Infinity];
   const total = body.length - (body.endsWith("\n") ? 1 : 0);
   const out: string[] = [];
-  const prev: { n: number; t: string }[] = [];
   let n = 0;
   let pos = 0;
   let shown = 0;
@@ -868,15 +911,21 @@ function grep(body: string, pattern: string, context: number, within: [number, n
   while (pos <= total && n < hi) {
     let nl = body.indexOf("\n", pos);
     if (nl === -1 || nl > total) nl = total;
-    const t = body.slice(pos, nl);
+    const start = pos;
     n++;
     pos = nl + 1;
     if (n < lo) continue;
-    if (test(t)) {
-      if (out.length && (prev[0]?.n ?? n) > shown + 1) out.push("--");
-      for (const p of prev) out.push(`${p.n}-${p.t}`);
-      prev.length = 0;
-      out.push(`${n}:${t}`);
+    if (m.test(hay ? hay.slice(start, nl) : body.slice(start, nl).toLowerCase())) {
+      const first = Math.max(shown + 1, lo, n - context);
+      if (out.length && first > shown + 1) out.push("--");
+      let s = start;
+      for (let k = first; k < n; k++) s = s >= 2 ? body.lastIndexOf("\n", s - 2) + 1 : 0;
+      for (let k = first; k < n; k++) {
+        const e = body.indexOf("\n", s);
+        out.push(`${k}-${body.slice(s, e)}`);
+        s = e + 1;
+      }
+      out.push(`${n}:${body.slice(start, nl)}`);
       shown = n;
       after = context;
       if (out.length > 5000) {
@@ -884,12 +933,9 @@ function grep(body: string, pattern: string, context: number, within: [number, n
         break;
       }
     } else if (after > 0) {
-      out.push(`${n}-${t}`);
+      out.push(`${n}-${body.slice(start, nl)}`);
       shown = n;
       after--;
-    } else if (context > 0) {
-      prev.push({ n, t });
-      if (prev.length > context) prev.shift();
     }
   }
   return out.length ? `${out.join("\n")}\n` : "";
@@ -1072,7 +1118,8 @@ ${options("ttl", "Expires", [["never", "never"], ["1h", "in 1 hour"], ["1d", "in
 </body></html>`);
 }
 
-const FONTS = [...CSS.matchAll(/url\("?(\/fonts\/[^)"]+)"?\)/g)].map((m) => m[1]).filter((f) => !f.includes("-ext."));
+const FONT_FILES = [...CSS.matchAll(/url\("?(\/fonts\/[^)"]+)"?\)/g)].map((m) => m[1]);
+const FONTS = FONT_FILES.filter((f) => !f.includes("-ext."));
 
 function head(req: Request, title: string, extra: string, script?: string): string {
   const theme = themeOf(req);
@@ -1119,7 +1166,6 @@ function wantsHtml(req: Request): boolean {
 }
 
 function harden(res: Response): Response {
-  if (res.status === 101) return res;
   const out = new Response(res.body, res);
   const h = out.headers;
   h.set("x-content-type-options", "nosniff");

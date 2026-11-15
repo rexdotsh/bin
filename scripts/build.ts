@@ -83,7 +83,7 @@ await $`rm -f ${tmpCss}`;
 
 await $`cp skill/bin/SKILL.md ${out}/skill.md && cp cli/install.sh ${out}/install && cp public/* ${out}/`;
 await Bun.write(`${out}/_headers`, ["/a/*", "/fonts/*"].map((p) => `${p}\n  cache-control: public, max-age=31536000, immutable\n`).join(""));
-await Bun.write(`${out}/.assetsignore`, "assets.json\n");
+await Bun.write(`${out}/.assetsignore`, "assets.json\nbin.css\n");
 
 const files = (await $`cd ${out} && find . -type f | sort`.text()).trim().split("\n").map((f) => f.slice(2));
 const expected = [".assetsignore", "_headers", "assets.json", "bin.css", "cli", "favicon.ico", "favicon.svg", "install", "llms.txt", "robots.txt", "skill.md", ...Object.values(assets).map((a) => a.slice(1))];

@@ -1,14 +1,30 @@
 export const ANSI_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()*+\-./][ -~]|\x1b[@-Z\\-_]?/g;
+export const OSC_LINES_RE = /\x1b\][^\x07\x1b\n]*\n[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 export const SGR_RE = /^\x1b\[([0-9;:]*)m$/;
 const CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f]/;
 const STRAY_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+const ANSI_STRAY_RE = new RegExp(`${ANSI_RE.source}|${STRAY_RE.source}`, "g");
 
 export function stripAnsi(s: string): string {
   if (!CONTROL_RE.test(s)) return s;
-  let out = s.replace(ANSI_RE, "");
-  if (out.includes("\r")) out = out.replace(/\r\n/g, "\n");
-  if (out.includes("\r")) out = out.replace(/^[^\n\r]*\r[^\n]*/gm, (l) => l.slice(l.lastIndexOf("\r", l.length - 2) + 1).replace(/\r$/, ""));
-  return out.replace(STRAY_RE, "");
+  if (!s.includes("\r")) return s.replace(ANSI_STRAY_RE, "");
+  const out = (s.includes("\x1b") ? s.replace(ANSI_RE, "") : s).replaceAll("\r\n", "\n");
+  return (out.includes("\r") ? overwrite(out) : out).replace(STRAY_RE, "");
+}
+
+function overwrite(s: string): string {
+  let out = "";
+  let from = 0;
+  for (let r = s.indexOf("\r"); r !== -1; r = s.indexOf("\r", from)) {
+    const start = s.lastIndexOf("\n", r) + 1;
+    const nl = s.indexOf("\n", r);
+    const end = nl === -1 ? s.length : nl;
+    const line = s.slice(start, end);
+    const kept = line.slice(line.lastIndexOf("\r", line.length - 2) + 1);
+    out += s.slice(from, start) + (kept.endsWith("\r") ? kept.slice(0, -1) : kept);
+    from = end;
+  }
+  return out + s.slice(from);
 }
 
 export function visible(line: string, newline: boolean): [number, number] {
