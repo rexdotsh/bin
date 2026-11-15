@@ -65,7 +65,7 @@ h1 + .meta { padding-top: 6px; }
 
 .tabs { display: flex; gap: 2px; overflow-x: auto; margin: -8px 0 20px; border-bottom: 1px solid var(--line); }
 .tabs a { font: 13px var(--mono); color: var(--mute2); text-decoration: none; padding: 8px 12px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
-.tabs a:hover { color: var(--fg); }
+@media (hover: hover) { .tabs a:hover { color: var(--fg); } }
 .tabs a[aria-current] { color: var(--fg); border-color: var(--fg); }
 
 .code { --p: calc(var(--gw, 3ch) + 32px); font: 13px/24px var(--mono); tab-size: 8; white-space: pre; overflow-x: auto; margin: 0 -12px; padding: 0 12px 0 var(--p); }
@@ -74,7 +74,7 @@ h1 + .meta { padding-top: 6px; }
 .code .l { display: block; counter-increment: n; margin: 0 -12px 0 calc(-1 * var(--p)); padding: 0 12px 0 var(--p); border-radius: 6px; }
 .code .l:first-child { counter-set: n calc(var(--n) + 1); }
 .code .l::before { content: counter(n); display: inline-block; width: var(--gw); margin: 0 20px 0 calc(-20px - var(--gw)); text-align: right; color: var(--gut); user-select: none; cursor: pointer; }
-.code .l:hover::before { color: var(--mute); }
+@media (hover: hover) { .code .l:hover::before { color: var(--mute); } }
 .code .l.sel { background: var(--sel); }
 .code .l.sel::before { color: var(--fg); }
 .code .l.hit { background: var(--hit); }
@@ -106,7 +106,7 @@ h1 + .meta { padding-top: 6px; }
 .foot { border-top: 1px solid var(--line); }
 .foot .wrap { display: flex; flex-wrap: wrap; gap: 6px 20px; padding: 16px 0 22px; font-size: 12px; color: var(--mute); }
 .foot button { background: none; border: 0; cursor: pointer; }
-.foot button:hover { color: var(--fg); }
+@media (hover: hover) { .foot button:hover { color: var(--fg); } }
 kbd { font: 11px var(--mono); color: var(--mute2); background: var(--soft); border-radius: 4px; padding: 1px 5px; margin-right: 5px; }
 
 .unlock { padding: 24px 0 8px; color: var(--mute2); }
@@ -124,7 +124,7 @@ kbd { font: 11px var(--mono); color: var(--mute2); background: var(--soft); bord
 .field, .bar select, .lockbtn { height: 30px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); font-size: 13px; outline: 0; transition: border-color 0.12s; }
 .field { padding: 0 10px; }
 .field::placeholder { color: var(--mute); }
-.field:hover, .bar select:hover, .lockbtn:hover { border-color: var(--edge); }
+@media (hover: hover) { .field:hover, .bar select:hover, .lockbtn:hover { border-color: var(--edge); } }
 .field:focus-visible, .bar select:focus-visible, .lockbtn:focus-visible, .pw:focus-within { border-color: var(--mute); }
 .btn { height: 30px; display: inline-flex; align-items: center; gap: 8px; background: var(--fg); color: var(--bg); border: 0; border-radius: 8px; padding: 0 12px; font-size: 13px; font-weight: 500; cursor: pointer; flex: none; }
 .btn:disabled { opacity: 0.5; cursor: default; }
@@ -144,7 +144,7 @@ kbd { font: 11px var(--mono); color: var(--mute2); background: var(--soft); bord
 .bar select { padding: 0 8px; cursor: pointer; }
 .bar option { background: var(--bg); color: var(--fg); }
 .pw { display: inline-flex; width: 160px; height: 30px; border: 1px solid var(--line); border-radius: 8px; transition: border-color 0.12s; }
-.pw:hover { border-color: var(--edge); }
+@media (hover: hover) { .pw:hover { border-color: var(--edge); } }
 .pw .lockbtn { height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 0; color: var(--mute2); cursor: pointer; flex: 1; border-radius: 7px; }
 .pw .lockbtn[aria-pressed="true"] { flex: none; color: var(--amber); padding-right: 2px; }
 .pw .lockbtn[aria-pressed="true"] span { display: none; }
@@ -186,7 +186,6 @@ kbd { font: 11px var(--mono); color: var(--mute2); background: var(--soft); bord
   .foot .wrap { align-items: center; gap: 0 22px; padding: 6px 0 calc(10px + env(safe-area-inset-bottom)); font-size: 13px; }
   .foot kbd, .foot .wrap [data-k="y"], .foot .wrap [data-k="r"], .foot .wrap [data-k="t"] { display: none; }
   .foot button { min-height: 44px; color: var(--mute2); }
-  .foot button:hover { color: var(--mute2); }
   .foot button:active, .wrap-on .foot [data-k="w"] { color: var(--fg); }
   .find { top: calc(12px + env(safe-area-inset-top)); bottom: auto; width: min(440px, 100% - 2 * var(--side)); padding: 0 0 0 14px; gap: 6px; }
   .find input { flex: 1; min-width: 0; height: 44px; font-size: 16px; }
