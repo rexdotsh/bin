@@ -61,6 +61,8 @@ function inline(ts: T[] = []): string {
       case "br":
         o += "<br>";
         break;
+      case "checkbox":
+        break;
       case "link": {
         const h = url(t.href);
         const inner = inline(t.tokens);
@@ -87,8 +89,10 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
   const cell = (tag: string, c: T) => `<${tag}${c.align === "center" ? ' class="c"' : c.align === "right" ? ' class="r"' : ""}>${inline(c.tokens)}</${tag}>`;
   const block = (t: T): string => {
     switch (t.type) {
-      case "paragraph":
-        return `<p>${inline(t.tokens)}</p>`;
+      case "paragraph": {
+        const h = inline(t.tokens);
+        return h && `<p>${h}</p>`;
+      }
       case "text":
         return t.tokens ? inline(t.tokens) : txt(t.text);
       case "heading": {
@@ -113,12 +117,11 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
       case "list": {
         const tag = t.ordered ? "ol" : "ul";
         const start = Number(t.start);
-        const task = t.items.some((i: T) => i.task);
         const items = t.items.map((i: T) => {
           const body = i.tokens!.map(block).join("");
-          return `<li>${i.task ? `<span class="box${i.checked ? " x" : ""}"></span><div${i.checked ? ' class="done"' : ""}>${body}</div>` : body}</li>`;
+          return i.task ? `<li class="t"><span class="box${i.checked ? " x" : ""}"></span><div${i.checked ? ' class="done"' : ""}>${body}</div></li>` : `<li>${body}</li>`;
         });
-        return `<${tag}${task ? ' class="task"' : ""}${t.ordered && Number.isInteger(start) && start !== 1 ? ` start="${start}"` : ""}>${items.join("")}</${tag}>`;
+        return `<${tag}${t.ordered && Number.isInteger(start) && start !== 1 ? ` start="${start}"` : ""}>${items.join("")}</${tag}>`;
       }
       case "table":
         return `<div class="tw"><table><thead><tr>${t.header.map((c: T) => cell("th", c)).join("")}</tr></thead><tbody>${t.rows

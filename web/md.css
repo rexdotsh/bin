@@ -19,9 +19,8 @@
 .md li { margin: 0.25em 0; }
 .md li > ul, .md li > ol { margin: 0; }
 .md li::marker { color: var(--mute); }
-.md .task { list-style: none; padding-left: 0.2em; }
-.md .task > li { display: flex; gap: 10px; align-items: baseline; }
-.md .box { width: 14px; height: 14px; border: 1.5px solid var(--gut); border-radius: 4px; flex: none; transform: translateY(2px); display: grid; place-items: center; }
+.md .t { list-style: none; position: relative; padding-left: calc(24px - 1.2em); }
+.md .box { width: 14px; height: 14px; border: 1.5px solid var(--gut); border-radius: 4px; position: absolute; left: -1.2em; top: calc((1lh - 14px) / 2); display: grid; place-items: center; }
 .md .box.x { background: var(--fg); border-color: var(--fg); }
 .md .box.x::after { content: ""; width: 7px; height: 4px; border: solid var(--bg); border-width: 0 0 1.6px 1.6px; transform: rotate(-45deg) translate(1px, -1px); }
 .md .done { color: var(--mute2); text-decoration: line-through; text-decoration-color: var(--gut); }
