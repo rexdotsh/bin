@@ -544,9 +544,10 @@ document.addEventListener("keydown", (e) => {
       if (store("sessionStorage", "bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }))) location.href = "/";
       else toast("couldn't open this in the editor");
     },
-    Escape: () => (findBox.hidden ? select(0, -1) : closeBox()),
+    Escape: () => (findBox.hidden ? (!MD || sel) && select(0, -1) : closeBox()),
   };
   if (MD) actions.m = () => show(!fmt(), true);
+  if (MD && fmt() && e.key === "w") return;
   const fn = actions[e.key];
   if (!fn) return;
   e.preventDefault();
