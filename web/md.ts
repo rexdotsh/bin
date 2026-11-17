@@ -83,9 +83,8 @@ function inline(ts: T[] = []): string {
       }
       case "image": {
         const s = url(t.href, true);
-        o += s
-          ? `<img src="${esc(s)}" alt="${txt(t.text)}"${t.title ? ` title="${txt(t.title)}"` : ""} loading="lazy" decoding="async" referrerpolicy="no-referrer">`
-          : txt(t.text);
+        const alt = esc(t.tokens ? plain(t.tokens) : decode(t.text));
+        o += s ? `<img src="${esc(s)}" alt="${alt}"${t.title ? ` title="${txt(t.title)}"` : ""} loading="lazy" decoding="async" referrerpolicy="no-referrer">` : alt;
         break;
       }
       default:
