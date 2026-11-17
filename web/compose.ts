@@ -174,6 +174,15 @@ async function show(r: Receipt, text: string, enc: boolean, copied: Promise<unkn
   if (title.value.trim()) meta.t = title.value.trim();
   if (name) meta.name = name;
   if (enc) meta.enc = "1";
+  let md = markdown(r.lang);
+  if (md) {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = asset("md.css");
+    const ready = new Promise<boolean>((ok) => ((css.onload = () => ok(true)), (css.onerror = () => ok(false))));
+    document.head.append(css);
+    md = await ready;
+  }
   const { cls, html } = viewBody({
     id: r.id!,
     ext: path.split(".")[1] ?? "",
@@ -182,16 +191,8 @@ async function show(r: Receipt, text: string, enc: boolean, copied: Promise<unkn
     meta,
     text: stripAnsi(text),
     ansi: text.includes("\x1b") ? text : undefined,
-    md: markdown(r.lang) ? cookie("md") !== "0" : undefined,
+    md: md ? cookie("md") !== "0" : undefined,
   });
-  if (markdown(r.lang)) {
-    const css = document.createElement("link");
-    css.rel = "stylesheet";
-    css.href = asset("md.css");
-    const ready = new Promise((r) => (css.onload = css.onerror = r));
-    document.head.append(css);
-    await ready;
-  }
   listening.abort();
   t.remove();
   document.body.className = cls;
@@ -205,7 +206,7 @@ async function show(r: Receipt, text: string, enc: boolean, copied: Promise<unkn
       () => toast("saved · link copied", 1800),
       () => toast("saved", 1800),
     )
-    .then(() => requestAnimationFrame(() => setTimeout(() => load(asset(markdown(r.lang) ? "view-md.js" : "view.js")).catch(() => location.reload()))));
+    .then(() => requestAnimationFrame(() => setTimeout(() => load(asset(md ? "view-md.js" : "view.js")).catch(() => location.reload()))));
 }
 
 saveBtn.addEventListener("click", () => save(), opts);

@@ -289,7 +289,7 @@ async function render(raw: string) {
   if (MD) {
     source = raw;
     if (built) return;
-    if (fmt()) return void (/^#L\d/.test(location.hash) ? show(false) : formatted());
+    if (fmt()) return void (/^#L\d/.test(location.hash) ? show(false) : formatted(history.state?.md));
     built = true;
   }
   const mods = ansi ? null : data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
@@ -309,47 +309,77 @@ async function render(raw: string) {
 let source = "";
 let built = false;
 let md: Promise<typeof import("./md") | null> | null = null;
+let mod: typeof import("./md") | null = null;
 const fmt = () => MD && document.body.classList.contains("fmt");
 
-function formatted() {
-  return (md ??= import(asset("md.js")).then(
-    async (m: typeof import("./md")) => {
-      await m.mount(pre, source, assets);
+function formatted(at?: number) {
+  return (md ??= import(asset("md.js"))
+    .then(async (m: typeof import("./md")) => {
+      mod = m;
+      const links = [...document.querySelectorAll<HTMLAnchorElement>(".tabs a")].map((a) => a.pathname);
+      await m.mount(pre, source, { assets, base: location.pathname, links: links.length ? links : undefined }, at);
       return m;
-    },
-    () => {
+    })
+    .catch(() => {
       md = null;
-      show(false);
+      if (fmt()) show(false);
       toast("couldn't format this");
       return null;
-    },
-  ));
+    }));
 }
 
-function topLine(): [number, number] | null {
+function topLine(): number | null {
   const r = topRow();
   if (!r) return null;
   const b = r.classList.contains("b") ? r : r.parentElement!;
   const at = (p: Element, c: Element) => Array.prototype.indexOf.call(p.children, c) as number;
-  return [at(pre, b) * BLOCK + (r === b ? 0 : at(b, r)) + 1, r.getBoundingClientRect().top];
+  const n = r === b ? Math.min(BLOCK, count - at(pre, b) * BLOCK) : 1;
+  const box = r.getBoundingClientRect();
+  return at(pre, b) * BLOCK + (r === b ? 0 : at(b, r)) + 1 + Math.max(0, -box.top / box.height) * n;
+}
+
+function lineY(at: number): number | null {
+  const n = Math.min(count, Math.floor(at));
+  if (n < 1) return null;
+  if (!painted[(n - 1) >> 8]) paint((n - 1) >> 8);
+  const r = line(n)?.getBoundingClientRect();
+  return r ? r.top + scrollY + Math.min(1, at - n) * r.height : null;
 }
 
 async function show(on: boolean, keep = false) {
   if (!loaded()) return;
-  const m = md && (await md);
-  const was = scrollY > 0 && (on || !/^#L\d/.test(location.hash)) && (fmt() ? (m?.top() ?? null) : built ? topLine() : null);
+  const was = scrollY > 0 && (on || !/^#L\d/.test(location.hash)) ? (fmt() ? (mod?.top() ?? null) : built ? topLine() : null) : null;
   document.body.classList.toggle("fmt", on);
   $("mdv").title = `${on ? "Source" : "Formatted"} (m)`;
   if (keep) setCookie("md", on ? "1" : "0");
   if (on && sel) select(0, -1);
-  let target: Element | null | undefined;
-  if (on) target = (await formatted())?.at(was ? was[0] : 1);
-  else {
+  let y: number | null = null;
+  if (on) {
+    const m = await formatted();
+    if (!fmt()) return;
+    y = was && m && m.y(was);
+  } else {
     if (!built) await render(source);
-    if (was && !painted[(was[0] - 1) >> 8]) paint((was[0] - 1) >> 8);
-    target = was ? line(was[0]) : null;
+    if (fmt()) return;
+    y = was && lineY(was);
   }
-  if (was && target) scrollBy(0, target.getBoundingClientRect().top - was[1]);
+  if (y !== null) scrollTo(0, y);
+  remember();
+}
+
+function remember() {
+  const at = fmt() && scrollY > 0 ? mod?.top() : null;
+  history.replaceState({ ...history.state, md: at }, "");
+  history.scrollRestoration = at ? "manual" : "auto";
+}
+
+if (MD) {
+  let wait = 0;
+  addEventListener("scroll", () => {
+    clearTimeout(wait);
+    wait = setTimeout(remember, 300);
+  });
+  addEventListener("pagehide", remember);
 }
 
 // ---------------------------------------------------------------- selection
@@ -515,9 +545,10 @@ document.addEventListener("keydown", (e) => {
       if (store("sessionStorage", "bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }))) location.href = "/";
       else toast("couldn't open this in the editor");
     },
-    Escape: () => (findBox.hidden ? select(0, -1) : closeBox()),
+    Escape: () => (findBox.hidden ? (!MD || sel) && select(0, -1) : closeBox()),
   };
   if (MD) actions.m = () => show(!fmt(), true);
+  if (MD && fmt() && e.key === "w") return;
   const fn = actions[e.key];
   if (!fn) return;
   e.preventDefault();
