@@ -2,7 +2,7 @@ import { Lexer, type Tokens } from "marked";
 
 type T = Tokens.Generic;
 type Hljs = { registerLanguage(name: string, lang: unknown): void; highlight(code: string, opts: { language: string; ignoreIllegals: boolean }): { value: string } };
-type Out = { html: string[]; lines: number[] };
+type Out = { html: string[]; lines: number[]; end: number };
 type Assets = Record<string, string>;
 type Parts = [string, string[], string];
 
@@ -173,7 +173,7 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
         return `<p>${esc(t.raw)}</p>`;
     }
   };
-  const out: Out = { html: [], lines: [] };
+  const out: Out = { html: [], lines: [], end: 1 };
   let line = 1;
   for (const t of tokens) {
     const at = line + (t.raw.match(/^\n*/)?.[0].length ?? 0);
@@ -191,6 +191,7 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
       }
     }
   }
+  out.end = line + 1;
   return out;
 }
 
@@ -262,8 +263,9 @@ const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r)
 
 let blocks: HTMLCollection | null = null;
 let starts: number[] = [];
+let end = 1;
 
-export async function mount(after: HTMLElement, text: string, assets: Assets): Promise<void> {
+export async function mount(after: HTMLElement, text: string, assets: Assets, at?: number): Promise<void> {
   const doc = document.createElement("article");
   doc.className = "md";
   after.after(doc);
@@ -275,6 +277,7 @@ export async function mount(after: HTMLElement, text: string, assets: Assets): P
     out ??= render((tokens = Lexer.lex(text) as T[]), null);
     blocks = doc.children;
     starts = out.lines.filter(Boolean);
+    end = out.end;
     let box: Element = doc;
     for (let i = 0, size = 0; i < out.html.length; ) {
       const kid = !out.lines[i];
@@ -288,11 +291,14 @@ export async function mount(after: HTMLElement, text: string, assets: Assets): P
         await frame();
       }
     }
-    let h = location.hash.slice(1);
-    try {
-      h = decodeURIComponent(h);
-    } catch {}
-    if (!scrollY && h.startsWith("md-")) document.getElementById(h)?.scrollIntoView();
+    if (!scrollY) {
+      let h = location.hash.slice(1);
+      try {
+        h = decodeURIComponent(h);
+      } catch {}
+      if (at) scrollTo(0, y(at) ?? 0);
+      else if (h.startsWith("md-")) document.getElementById(h)?.scrollIntoView();
+    }
     if (tokens) colour(doc, langsOf(tokens, assets), assets);
   } catch (e) {
     doc.remove();
@@ -335,18 +341,21 @@ async function colour(doc: HTMLElement, langs: Set<string>, assets: Assets) {
   }
 }
 
-export function top(): [number, number] | null {
+const next = (i: number) => starts[i + 1] ?? end;
+
+export function top(): number | null {
   if (!blocks) return null;
   for (let i = 0; i < blocks.length; i++) {
     const r = blocks[i].getBoundingClientRect();
-    if (r.bottom > 0) return [starts[i], r.top];
+    if (r.bottom > 0) return starts[i] + Math.max(0, -r.top / r.height) * (next(i) - starts[i]);
   }
   return null;
 }
 
-export function at(line: number): Element | null {
-  if (!blocks) return null;
+export function y(line: number): number | null {
+  if (!blocks?.length) return null;
   let i = 0;
   while (i + 1 < blocks.length && starts[i + 1] <= line) i++;
-  return blocks[i] ?? null;
+  const r = blocks[i].getBoundingClientRect();
+  return r.top + scrollY + Math.max(0, Math.min(1, (line - starts[i]) / (next(i) - starts[i] || 1))) * r.height;
 }
