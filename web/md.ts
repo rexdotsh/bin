@@ -14,6 +14,12 @@ const ALIAS: Record<string, string> = {
   sh: "bash", shell: "bash", zsh: "bash", jsonc: "json", yml: "yaml", toml: "ini", md: "markdown", html: "xml", htm: "xml", svg: "xml", vue: "xml",
   pl: "perl", gql: "graphql", docker: "dockerfile", make: "makefile", mk: "makefile",
 };
+const REL = ' rel="noopener noreferrer nofollow ugc"';
+const IMG = ' loading="lazy" decoding="async" referrerpolicy="no-referrer"';
+const TAGS = new Set("a b blockquote br code del details div em h1 h2 h3 h4 h5 h6 hr i img ins kbd li mark ol p pre s small span strong sub summary sup table tbody td tfoot th thead tr u ul".split(" "));
+const DROP = /<!--[\s\S]*?(?:-->|$)|<(script|style|textarea|title|template|noscript|iframe|svg|math)\b[\s\S]*?(?:<\/\1\s*>|$)/gi;
+const TAG = /<(\/?)([a-z][a-z\d]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
+const ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 let ents: Record<string, string> = {};
 
@@ -26,6 +32,7 @@ const decode = (s: string) =>
     return n > 0 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff) ? String.fromCodePoint(n) : "\ufffd";
   });
 const txt = (s: string) => esc(decode(s));
+const shut = (open: string[]) => open.splice(0).reverse().map((n) => `</${n}>`).join("");
 
 function entities(text: string): Record<string, string> {
   const names = [...new Set(text.match(/&[a-z][a-z\d]{1,31};/gi))];
@@ -49,6 +56,42 @@ function url(href: string, img?: boolean): string | null {
   }
 }
 
+function attr(tag: string, k: string, v: string): string {
+  if ((tag === "a" && k === "href") || (tag === "img" && k === "src")) {
+    const u = url(v, tag === "img");
+    return u ? ` ${k}="${esc(u)}"` : "";
+  }
+  v = v.trim();
+  if (k === "alt" || k === "title") return ` ${k}="${txt(v)}"`;
+  if (tag === "img" && (k === "width" || k === "height") && /^\d{1,4}%?$/.test(v)) return ` ${k}="${v}"`;
+  if (k === "align" && /^(?:left|center|right)$/i.test(v)) return ` class="al-${v.toLowerCase()}"`;
+  return tag === "details" && k === "open" ? " open" : "";
+}
+
+function tags(s: string, open: string[]): string {
+  let o = "";
+  let at = 0;
+  s = s.replace(DROP, "");
+  for (const m of s.matchAll(TAG)) {
+    o += txt(s.slice(at, m.index));
+    at = m.index + m[0].length;
+    const name = m[2].toLowerCase();
+    if (!TAGS.has(name)) continue;
+    if (m[1]) {
+      const i = open.lastIndexOf(name);
+      if (i >= 0) o += shut(open.splice(i));
+      continue;
+    }
+    const seen: Record<string, string> = {};
+    for (const [, k, ...v] of m[3].matchAll(ATTR)) seen[k.toLowerCase()] ??= v.find((x) => x !== undefined) ?? "";
+    const attrs = Object.entries(seen).map(([k, v]) => attr(name, k, v)).join("");
+    if (name === "img") o += attrs.includes(' src="') ? `<img${attrs}${IMG}>` : "";
+    else o += `<${name}${attrs}${name === "a" && attrs.includes(' href="') ? REL : ""}>`;
+    if (!/^(?:br|hr|img)$/.test(name)) open.push(name);
+  }
+  return o + txt(s.slice(at));
+}
+
 const plain = (ts: T[] = []): string =>
   ts.map((t) => (t.tokens ? plain(t.tokens) : t.type === "text" ? decode(t.text) : t.type === "escape" || t.type === "codespan" ? t.text : "")).join("");
 const fence = (info?: string) => {
@@ -57,6 +100,7 @@ const fence = (info?: string) => {
 };
 
 function inline(ts: T[] = []): string {
+  const open: string[] = [];
   let o = "";
   for (const t of ts) {
     switch (t.type) {
@@ -74,25 +118,28 @@ function inline(ts: T[] = []): string {
       case "br":
         o += "<br>";
         break;
+      case "html":
+        o += tags(t.text, open);
+        break;
       case "checkbox":
         break;
       case "link": {
         const h = url(t.href);
         const inner = inline(t.tokens);
-        o += h ? `<a href="${esc(h)}"${t.title ? ` title="${txt(t.title)}"` : ""} rel="noopener noreferrer nofollow ugc">${inner}</a>` : inner;
+        o += h ? `<a href="${esc(h)}"${t.title ? ` title="${txt(t.title)}"` : ""}${REL}>${inner}</a>` : inner;
         break;
       }
       case "image": {
         const s = url(t.href, true);
         const alt = esc(t.tokens ? plain(t.tokens) : decode(t.text));
-        o += s ? `<img src="${esc(s)}" alt="${alt}"${t.title ? ` title="${txt(t.title)}"` : ""} loading="lazy" decoding="async" referrerpolicy="no-referrer">` : alt;
+        o += s ? `<img src="${esc(s)}" alt="${alt}"${t.title ? ` title="${txt(t.title)}"` : ""}${IMG}>` : alt;
         break;
       }
       default:
         o += esc(typeof t.text === "string" ? t.text : t.raw);
     }
   }
-  return o;
+  return o + shut(open);
 }
 
 function cut(html: string): string[] {
@@ -113,13 +160,25 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
   const used = new Set<string>();
   const seen = new Map<string, number>();
   const cell = (tag: string, c: T) => `<${tag}${c.align === "center" ? ' class="c"' : c.align === "right" ? ' class="r"' : ""}>${inline(c.tokens)}</${tag}>`;
+  const each = (ts: T[]): string[] => {
+    const out: string[] = [];
+    const open: string[] = [];
+    for (const t of ts) {
+      const deep = open.length > 0;
+      const h = block(t, open);
+      if (deep) out[out.length - 1] += h;
+      else if (h) out.push(h);
+    }
+    if (open.length) out[out.length - 1] += shut(open);
+    return out;
+  };
   const big = (t: T): Parts | null => {
     switch (t.type) {
       case "list": {
         const tag = t.ordered ? "ol" : "ul";
         const start = Number(t.start);
         const items = t.items.map((i: T) => {
-          const body = i.tokens!.map(block).join("");
+          const body = each(i.tokens!).join("");
           return i.task ? `<li class="t"><span class="box${i.checked ? " x" : ""}"></span><div${i.checked ? ' class="done"' : ""}>${body}</div></li>` : `<li>${body}</li>`;
         });
         return [`<${tag}${t.ordered && Number.isInteger(start) && start !== 1 ? ` start="${start}"` : ""}>`, items, `</${tag}>`];
@@ -131,7 +190,7 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
           "</tbody></table></div>",
         ];
       case "blockquote":
-        return ["<blockquote>", t.tokens!.map(block), "</blockquote>"];
+        return ["<blockquote>", each(t.tokens!), "</blockquote>"];
       case "code": {
         const lang = t.codeBlockStyle ? "" : fence(t.lang);
         const code = (lang && hl && hl(t.text, lang)) || esc(t.text);
@@ -141,7 +200,7 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
     }
     return null;
   };
-  const block = (t: T): string => {
+  const block = (t: T, open: string[] = []): string => {
     const p = big(t);
     if (p) return p[0] + p[1].join("") + p[2];
     switch (t.type) {
@@ -162,7 +221,7 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
         return `<h${d} id="md-${esc(id)}">${inline(t.tokens)}</h${d}>`;
       }
       case "html":
-        return t.block ? `<pre><code>${esc(t.text.replace(/\n+$/, ""))}</code></pre>` : esc(t.text);
+        return tags(t.text, open);
       case "hr":
         return "<hr>";
       case "space":
@@ -174,12 +233,19 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
     }
   };
   const out: Out = { html: [], lines: [], end: 1 };
+  const open: string[] = [];
   let line = 1;
   for (const t of tokens) {
     const at = line + (t.raw.match(/^\n*/)?.[0].length ?? 0);
     line += t.raw.split("\n").length - 1;
+    const last = out.html.length - 1;
+    if (open.length && out.html[last].length < 2 * CHUNK) {
+      out.html[last] += block(t, open);
+      continue;
+    }
+    if (open.length) out.html[last] += shut(open);
     const p = big(t);
-    const html = p ? p[0] + p[1].join("") + p[2] : t.type === "text" ? `<p>${block(t)}</p>` : block(t);
+    const html = p ? p[0] + p[1].join("") + p[2] : t.type === "text" ? `<p>${block(t)}</p>` : block(t, open);
     if (!html) continue;
     out.lines.push(at);
     if (!p || html.length <= CHUNK) out.html.push(html);
@@ -191,6 +257,7 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
       }
     }
   }
+  if (open.length) out.html[out.html.length - 1] += shut(open);
   out.end = line + 1;
   return out;
 }
