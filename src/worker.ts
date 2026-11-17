@@ -1,4 +1,5 @@
 import CSS from "../dist/bin.css";
+import MD_CSS from "../dist/md.css";
 import { asset, esc, hlModules, INLINE_MAX, LOCK_ICON, safeJson, segments, THEME_BUTTON, viewBody } from "./page";
 import { OSC_LINES_RE, stripAnsi } from "./text";
 
@@ -31,7 +32,7 @@ const EXT_LANG: Record<string, string> = {
   py: "python", rs: "rust", go: "go", rb: "ruby", java: "java", kt: "kotlin", swift: "swift",
   c: "c", h: "c", cc: "cpp", cpp: "cpp", hpp: "cpp", cs: "csharp", php: "php", lua: "lua",
   sh: "bash", bash: "bash", zsh: "bash", json: "json", yaml: "yaml", yml: "yaml", toml: "ini", ini: "ini",
-  md: "markdown", html: "xml", htm: "xml", xml: "xml", svg: "xml", vue: "xml", css: "css", scss: "scss",
+  md: "markdown", markdown: "markdown", html: "xml", htm: "xml", xml: "xml", svg: "xml", vue: "xml", css: "css", scss: "scss",
   sql: "sql", diff: "diff", patch: "diff", log: "log", txt: "text", r: "r", pl: "perl", graphql: "graphql",
   dockerfile: "dockerfile", makefile: "makefile",
 };
@@ -81,7 +82,7 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
   const [first, ...rest] = parts;
   if (first === "a" || first === "fonts") {
     const unhash = (p: string) => p.replace(/\.[0-9a-f]{8}(\.woff2)$/, "$1");
-    const current = first === "a" ? asset(rest.join("/").replace(/\.[0-9a-f]{8}\.js$/, ".js")) : FONT_FILES.find((f) => unhash(f) === unhash(url.pathname));
+    const current = first === "a" ? asset(rest.join("/").replace(/\.[0-9a-f]{8}\.(js|css)$/, ".$1")) : FONT_FILES.find((f) => unhash(f) === unhash(url.pathname));
     if (!current || current === url.pathname) return notFound(req);
     return new Response(null, { status: 307, headers: { location: current } });
   }
@@ -1063,6 +1064,7 @@ function viewer(
   const inline = Number(meta.bytes || body.length) <= INLINE_MAX;
   const ansi = inline && !enc && (meta.ansi === "1" || (extra.file !== undefined && body.includes("\x1b")));
   const hl = inline && !enc ? (ansi ? null : hlModules(meta.lang || "", body)) : undefined;
+  const md = meta.lang === "markdown" && !extra.diff ? cookie(req, "md") !== "0" : undefined;
   const heading = meta.t || meta.name || "";
   const { cls, html } = viewBody({
     id,
@@ -1077,18 +1079,25 @@ function viewer(
     file: extra.file,
     diff: extra.diff,
     hl,
+    md,
   });
   const desc = inline || enc ? preview(body, meta) : `${Number(meta.lines || 0).toLocaleString("en")} lines`;
   const raw = extra.diff ? "" : `/raw/${id}${extra.file ? `/${segments(extra.file)}` : ""}`;
   const tabs = extra.files ? `<script type="speculationrules">${TAB_RULES}</script>` : "";
   const src = inline || !raw ? "" : `<link rel="preload" href="${raw}" as="fetch" crossorigin>`;
-  const og = `${tabs}${src}${(hl ?? []).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
+  const og = `${tabs}${src}${(md ? [asset("md.js")] : (hl ?? [])).map((m) => `<link rel="modulepreload" href="${m}">`).join("")}
 <meta property="og:title" content="${esc(heading || id)}"><meta property="og:description" content="${esc(desc)}">
 <meta property="og:site_name" content="bin"><meta property="og:type" content="article"><meta name="twitter:card" content="summary">${raw ? `<link rel="alternate" type="text/plain" href="${raw}">` : ""}`;
-  return page(req, `${head(req, `${heading || id} · bin`, og, asset("view.js"))}
+  const mdHead = md === undefined ? "" : `<noscript><style>.fmt #text{display:block!important}</style></noscript>`;
+  return page(
+    req,
+    `${head(req, `${heading || id} · bin`, og + mdHead, asset(md === undefined ? "view.js" : "view-md.js"), md === undefined ? "" : MD_CSS)}
 <body class="${cls}">
 ${html}
-</body></html>`);
+</body></html>`,
+    200,
+    md !== undefined,
+  );
 }
 
 const TAB_RULE = { source: "document", where: { selector_matches: ".tabs a:not([aria-current])" }, eagerness: "moderate" };
@@ -1121,7 +1130,7 @@ ${options("ttl", "Expires", [["never", "never"], ["1h", "in 1 hour"], ["1d", "in
 const FONT_FILES = [...CSS.matchAll(/url\("?(\/fonts\/[^)"]+)"?\)/g)].map((m) => m[1]);
 const FONTS = FONT_FILES.filter((f) => !f.includes("-ext."));
 
-function head(req: Request, title: string, extra: string, script?: string): string {
+function head(req: Request, title: string, extra: string, script?: string, css = ""): string {
   const theme = themeOf(req);
   const fonts = script ? FONTS : FONTS.filter((f) => !f.includes("mono"));
   return `<!doctype html>
@@ -1129,11 +1138,11 @@ function head(req: Request, title: string, extra: string, script?: string): stri
 <title>${esc(title)}</title>${extra}
 <meta name="theme-color" content="${theme === "light" ? "#fcfcfb" : "#0a0a0a"}"><link rel="icon" href="/favicon.svg">
 ${fonts.map((f) => `<link rel="preload" href="${f}" as="font" type="font/woff2" crossorigin>`).join("")}${script ? `<script type="module" src="${script}"></script>` : ""}
-<style>${CSS}</style></head>`;
+<style>${CSS}${css}</style></head>`;
 }
 
-function page(req: Request, body: string, status = 200): Response {
-  const headers = new Headers({ "content-type": "text/html; charset=utf-8", vary: "accept-encoding" });
+function page(req: Request, body: string, status = 200, images = false): Response {
+  const headers = new Headers({ "content-type": "text/html; charset=utf-8", vary: "accept-encoding", "content-security-policy": csp(images) });
   const accept = req.headers.get("accept-encoding") ?? "";
   if (/\bbr\b/.test(accept)) headers.set("content-encoding", "br");
   else if (/\bgzip\b/.test(accept)) headers.set("content-encoding", "gzip");
@@ -1175,14 +1184,14 @@ function harden(res: Response): Response {
   h.set("vary", [h.get("vary"), "accept, sec-fetch-dest, user-agent, cookie"].filter(Boolean).join(", "));
   if (!h.has("cache-control")) h.set("cache-control", "private, no-cache, no-transform");
   if ((h.get("content-type") ?? "").startsWith("text/html")) {
-    h.set(
-      "content-security-policy",
-      "default-src 'none'; script-src 'self' 'inline-speculation-rules'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-    );
+    if (!h.has("content-security-policy")) h.set("content-security-policy", csp(false));
     h.set("x-frame-options", "DENY");
   } else h.set("content-security-policy", "sandbox; default-src 'none'");
   return out;
 }
+
+const csp = (images: boolean) =>
+  `default-src 'none'; script-src 'self' 'inline-speculation-rules'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:${images ? " https:" : ""}; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
 async function sha256(s: string): Promise<string> {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));

@@ -32,7 +32,7 @@ const langs = [...new Set([...worker.match(/const EXT_LANG[^{]*\{([^}]*)\}/)![1]
 );
 const assets: Record<string, string> = {};
 const hashed = async (opts: Parameters<typeof Bun.build>[0], dir: string) => {
-  const res = await build({ ...opts, outdir: `/tmp/bin-build-${process.pid}`, naming: "[name].[ext]" });
+  const res = await build({ naming: "[name].[ext]", ...opts, outdir: `/tmp/bin-build-${process.pid}` });
   for (const o of res.outputs) {
     const code = await o.text();
     const name = o.path.split("/").pop()!.replace(/\.js$/, "");
@@ -55,7 +55,36 @@ await Bun.write(
 await hashed({ entrypoints: [auto] }, "hl/");
 await $`rm -rf ${auto.replace(/\/auto\.js$/, "")}`;
 await hashed({ entrypoints: ["web/hl-worker.ts"] }, "");
-await hashed({ entrypoints: ["web/view.ts"] }, "");
+await hashed({ entrypoints: ["web/view.ts"], define: { MD: "false" } }, "");
+
+const lexerOnly: Bun.BunPlugin = {
+  name: "marked-lexer-only",
+  setup(b) {
+    b.onLoad({ filter: /marked\.esm\.js$/ }, async ({ path }) => {
+      const src = await Bun.file(path).text();
+      const names = Object.fromEntries([...(src.match(/export\{([^}]*)\};?\s*(?:\/\/.*\s*)?$/)?.[1] ?? "").matchAll(/(\w+) as (\w+)/g)].map((m) => [m[2], m[1]]));
+      const cut = names.Marked && src.search(new RegExp(`var \\w+=new ${names.Marked.replace(/\$/g, "\\$")};`));
+      if (!names.Lexer || !cut || cut < 0) throw new Error("marked's bundle changed shape; update the marked-lexer-only plugin");
+      return { contents: `${src.slice(0, cut)}export{${names.Lexer} as Lexer};`, loader: "js" };
+    });
+  },
+};
+await hashed({ entrypoints: ["web/md.ts"], plugins: [lexerOnly] }, "");
+
+const minCss = async (src: string) => {
+  const tmp = `/tmp/bin-css-${process.pid}.css`;
+  await Bun.write(tmp, src);
+  const res = await build({ entrypoints: [tmp], external: ["/fonts/*"] });
+  await $`rm -f ${tmp}`;
+  return (await res.outputs[0].text()).replace(/^\/\*.*\*\/\n/gm, "").trim();
+};
+const mdCss = await minCss(await Bun.file("web/md.css").text());
+const mdCssName = `md.${new Bun.CryptoHasher("sha256").update(mdCss).digest("hex").slice(0, 8)}.css`;
+await Bun.write(`${out}/md.css`, mdCss);
+await Bun.write(`${out}/a/${mdCssName}`, mdCss);
+assets["md.css"] = `/a/${mdCssName}`;
+await Bun.write(`${out}/assets.json`, JSON.stringify(assets));
+await hashed({ entrypoints: ["web/view.ts"], define: { MD: "true" }, naming: "view-md.[ext]" }, "");
 await hashed({ entrypoints: ["web/compose.ts"] }, "");
 
 let css = await Bun.file("web/bin.css").text();
@@ -75,19 +104,15 @@ for (const [face, file, features] of [
     css = css.replaceAll(fontUrl, `url("/fonts/${name}") format("woff2"); unicode-range: ${unicodeRange(cps)};`);
   }
 }
-const tmpCss = `/tmp/bin-css-${process.pid}.css`;
-await Bun.write(tmpCss, css);
-const cssOut = await build({ entrypoints: [tmpCss], external: ["/fonts/*"] });
-await Bun.write(`${out}/bin.css`, (await cssOut.outputs[0].text()).replace(/^\/\*.*\*\/\n/gm, "").trim());
-await $`rm -f ${tmpCss}`;
+await Bun.write(`${out}/bin.css`, await minCss(css));
 
 await $`cp skill/bin/SKILL.md ${out}/skill.md && cp cli/install.sh ${out}/install && cp public/* ${out}/`;
 await Bun.write(`${out}/_headers`, ["/a/*", "/fonts/*"].map((p) => `${p}\n  cache-control: public, max-age=31536000, immutable\n`).join(""));
-await Bun.write(`${out}/.assetsignore`, "assets.json\nbin.css\n");
+await Bun.write(`${out}/.assetsignore`, "assets.json\nbin.css\nmd.css\n");
 
 const files = (await $`cd ${out} && find . -type f | sort`.text()).trim().split("\n").map((f) => f.slice(2));
-const expected = [".assetsignore", "_headers", "assets.json", "bin.css", "cli", "favicon.ico", "favicon.svg", "install", "llms.txt", "robots.txt", "skill.md", ...Object.values(assets).map((a) => a.slice(1))];
-const wanted = ["view.js", "compose.js", "hl-worker.js", "hl/core.js", "hl/auto.js", ...langs.map((l) => `hl/${l}.js`)];
+const expected = [".assetsignore", "_headers", "assets.json", "bin.css", "md.css", "cli", "favicon.ico", "favicon.svg", "install", "llms.txt", "robots.txt", "skill.md", ...Object.values(assets).map((a) => a.slice(1))];
+const wanted = ["view.js", "view-md.js", "compose.js", "hl-worker.js", "md.js", "md.css", "hl/core.js", "hl/auto.js", ...langs.map((l) => `hl/${l}.js`)];
 const fonts = files.filter((f) => /^fonts\/geist(-mono)?(-ext)?\.[0-9a-f]{8}\.woff2$/.test(f));
 const unexpected = files.filter((f) => !expected.includes(f) && !fonts.includes(f));
 if (unexpected.length || expected.some((f) => !files.includes(f)) || fonts.length !== 4 || wanted.some((k) => !assets[k]) || Object.keys(assets).length !== wanted.length) {
