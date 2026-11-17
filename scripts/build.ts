@@ -57,10 +57,12 @@ await $`rm -rf ${auto.replace(/\/auto\.js$/, "")}`;
 await hashed({ entrypoints: ["web/hl-worker.ts"] }, "");
 await hashed({ entrypoints: ["web/view.ts"], define: { MD: "false" } }, "");
 
+let cutMarked = false;
 const lexerOnly: Bun.BunPlugin = {
   name: "marked-lexer-only",
   setup(b) {
-    b.onLoad({ filter: /marked\.esm\.js$/ }, async ({ path }) => {
+    b.onLoad({ filter: /[\\/]node_modules[\\/]marked[\\/].*\.[cm]?js$/ }, async ({ path }) => {
+      cutMarked = true;
       const src = await Bun.file(path).text();
       const names = Object.fromEntries([...(src.match(/export\{([^}]*)\};?\s*(?:\/\/.*\s*)?$/)?.[1] ?? "").matchAll(/(\w+) as (\w+)/g)].map((m) => [m[2], m[1]]));
       const cut = names.Marked && src.search(new RegExp(`var \\w+=new ${names.Marked.replace(/\$/g, "\\$")};`));
@@ -70,6 +72,7 @@ const lexerOnly: Bun.BunPlugin = {
   },
 };
 await hashed({ entrypoints: ["web/md.ts"], plugins: [lexerOnly] }, "");
+if (!cutMarked) throw new Error("the marked-lexer-only plugin never ran; md.js would ship all of marked");
 
 const minCss = async (src: string) => {
   const tmp = `/tmp/bin-css-${process.pid}.css`;
