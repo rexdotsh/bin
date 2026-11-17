@@ -4,6 +4,7 @@ type T = Tokens.Generic;
 type Hljs = { registerLanguage(name: string, lang: unknown): void; highlight(code: string, opts: { language: string; ignoreIllegals: boolean }): { value: string } };
 type Out = { html: string[]; lines: number[] };
 type Assets = Record<string, string>;
+type Parts = [string, string[], string];
 
 const WORKER_MIN = 64 * 1024;
 const CHUNK = 32 * 1024;
@@ -94,11 +95,55 @@ function inline(ts: T[] = []): string {
   return o;
 }
 
+function cut(html: string): string[] {
+  const out: string[] = [];
+  const open: string[] = [];
+  for (let at = 0; at < html.length; ) {
+    const end = html.indexOf("\n", at + CHUNK) + 1 || html.length;
+    const s = html.slice(at, end);
+    const pre = open.join("");
+    for (const m of s.matchAll(/<(\/?)span[^>]*>/g)) m[1] ? open.pop() : open.push(m[0]);
+    out.push(pre + s + "</span>".repeat(open.length));
+    at = end;
+  }
+  return out;
+}
+
 function render(tokens: T[], hl: ((code: string, lang: string) => string | null) | null): Out {
   const used = new Set<string>();
   const seen = new Map<string, number>();
   const cell = (tag: string, c: T) => `<${tag}${c.align === "center" ? ' class="c"' : c.align === "right" ? ' class="r"' : ""}>${inline(c.tokens)}</${tag}>`;
+  const big = (t: T): Parts | null => {
+    switch (t.type) {
+      case "list": {
+        const tag = t.ordered ? "ol" : "ul";
+        const start = Number(t.start);
+        const items = t.items.map((i: T) => {
+          const body = i.tokens!.map(block).join("");
+          return i.task ? `<li class="t"><span class="box${i.checked ? " x" : ""}"></span><div${i.checked ? ' class="done"' : ""}>${body}</div></li>` : `<li>${body}</li>`;
+        });
+        return [`<${tag}${t.ordered && Number.isInteger(start) && start !== 1 ? ` start="${start}"` : ""}>`, items, `</${tag}>`];
+      }
+      case "table":
+        return [
+          `<div class="tw"><table><thead><tr>${t.header.map((c: T) => cell("th", c)).join("")}</tr></thead><tbody>`,
+          t.rows.map((r: T[]) => `<tr>${r.map((c) => cell("td", c)).join("")}</tr>`),
+          "</tbody></table></div>",
+        ];
+      case "blockquote":
+        return ["<blockquote>", t.tokens!.map(block), "</blockquote>"];
+      case "code": {
+        const lang = t.codeBlockStyle ? "" : fence(t.lang);
+        const code = (lang && hl && hl(t.text, lang)) || esc(t.text);
+        const open = `<code${lang && !hl ? ` data-hl="${esc(lang)}"` : ""}>`;
+        return code.length > CHUNK ? ["<pre>", cut(code).map((c) => `<div>${open}${c}</code></div>`), "</pre>"] : [`<pre>${open}`, [code], "</code></pre>"];
+      }
+    }
+    return null;
+  };
   const block = (t: T): string => {
+    const p = big(t);
+    if (p) return p[0] + p[1].join("") + p[2];
     switch (t.type) {
       case "paragraph": {
         const h = inline(t.tokens);
@@ -116,28 +161,8 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
         used.add(id);
         return `<h${d} id="md-${esc(id)}">${inline(t.tokens)}</h${d}>`;
       }
-      case "code": {
-        const lang = t.codeBlockStyle ? "" : fence(t.lang);
-        const code = (lang && hl && hl(t.text, lang)) || esc(t.text);
-        return `<pre><code${lang && !hl ? ` data-hl="${esc(lang)}"` : ""}>${code}</code></pre>`;
-      }
       case "html":
         return t.block ? `<pre><code>${esc(t.text.replace(/\n+$/, ""))}</code></pre>` : esc(t.text);
-      case "blockquote":
-        return `<blockquote>${t.tokens!.map(block).join("")}</blockquote>`;
-      case "list": {
-        const tag = t.ordered ? "ol" : "ul";
-        const start = Number(t.start);
-        const items = t.items.map((i: T) => {
-          const body = i.tokens!.map(block).join("");
-          return i.task ? `<li class="t"><span class="box${i.checked ? " x" : ""}"></span><div${i.checked ? ' class="done"' : ""}>${body}</div></li>` : `<li>${body}</li>`;
-        });
-        return `<${tag}${t.ordered && Number.isInteger(start) && start !== 1 ? ` start="${start}"` : ""}>${items.join("")}</${tag}>`;
-      }
-      case "table":
-        return `<div class="tw"><table><thead><tr>${t.header.map((c: T) => cell("th", c)).join("")}</tr></thead><tbody>${t.rows
-          .map((r: T[]) => `<tr>${r.map((c) => cell("td", c)).join("")}</tr>`)
-          .join("")}</tbody></table></div>`;
       case "hr":
         return "<hr>";
       case "space":
@@ -151,12 +176,20 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
   const out: Out = { html: [], lines: [] };
   let line = 1;
   for (const t of tokens) {
-    const html = t.type === "text" ? `<p>${block(t)}</p>` : block(t);
-    if (html) {
-      out.html.push(html);
-      out.lines.push(line + (t.raw.match(/^\n*/)?.[0].length ?? 0));
-    }
+    const at = line + (t.raw.match(/^\n*/)?.[0].length ?? 0);
     line += t.raw.split("\n").length - 1;
+    const p = big(t);
+    const html = p ? p[0] + p[1].join("") + p[2] : t.type === "text" ? `<p>${block(t)}</p>` : block(t);
+    if (!html) continue;
+    out.lines.push(at);
+    if (!p || html.length <= CHUNK) out.html.push(html);
+    else {
+      out.html.push(`<div>${p[0]}${p[2]}</div>`);
+      for (const k of p[1]) {
+        out.html.push(k);
+        out.lines.push(0);
+      }
+    }
   }
   return out;
 }
@@ -241,12 +274,19 @@ export async function mount(after: HTMLElement, text: string, assets: Assets): P
     let tokens: T[] | null = null;
     out ??= render((tokens = Lexer.lex(text) as T[]), null);
     blocks = doc.children;
-    starts = out.lines;
-    for (let i = 0; i < out.html.length; ) {
+    starts = out.lines.filter(Boolean);
+    let box: Element = doc;
+    for (let i = 0, size = 0; i < out.html.length; ) {
+      const kid = !out.lines[i];
       let html = "";
-      while (i < out.html.length && html.length < CHUNK) html += out.html[i++];
-      doc.insertAdjacentHTML("beforeend", html);
-      if (i < out.html.length) await frame();
+      while (i < out.html.length && !out.lines[i] === kid && html.length < (kid ? CHUNK / 2 : CHUNK)) html += out.html[i++];
+      if (kid && /^(?:UL|OL|TBODY)$/.test(box.tagName) && box.childElementCount) box = more(box as HTMLElement);
+      (kid ? box : doc).insertAdjacentHTML("beforeend", html);
+      if (!kid) for (box = doc.lastElementChild!; box.lastElementChild; ) box = box.lastElementChild;
+      if (((size += html.length) >= CHUNK || kid) && i < out.html.length) {
+        size = 0;
+        await frame();
+      }
     }
     let h = location.hash.slice(1);
     try {
@@ -259,6 +299,26 @@ export async function mount(after: HTMLElement, text: string, assets: Assets): P
     blocks = null;
     throw e;
   }
+}
+
+function more(box: HTMLElement): Element {
+  if (box.tagName !== "TBODY") {
+    const n = box.cloneNode(false) as HTMLElement;
+    if (n instanceof HTMLOListElement) n.start = (box as HTMLOListElement).start + box.childElementCount;
+    box.style.marginBottom = "0";
+    box.after(n);
+    return n;
+  }
+  const t = box.parentElement as HTMLTableElement;
+  if (!t.style.width) {
+    const w = t.getBoundingClientRect().width;
+    t.insertAdjacentHTML("afterbegin", `<colgroup>${[...t.rows[0].cells].map((c) => `<col style="width:${c.getBoundingClientRect().width}px">`).join("")}</colgroup>`);
+    t.style.cssText = `table-layout:fixed;width:${w}px`;
+  }
+  const n = t.cloneNode(false) as HTMLTableElement;
+  n.innerHTML = `${t.querySelector("colgroup")!.outerHTML}<tbody></tbody>`;
+  t.after(n);
+  return n.tBodies[0];
 }
 
 async function colour(doc: HTMLElement, langs: Set<string>, assets: Assets) {
