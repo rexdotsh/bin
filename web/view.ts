@@ -316,7 +316,8 @@ function formatted(at?: number) {
   return (md ??= import(asset("md.js"))
     .then(async (m: typeof import("./md")) => {
       mod = m;
-      await m.mount(pre, source, assets, at);
+      const links = [...document.querySelectorAll<HTMLAnchorElement>(".tabs a")].map((a) => a.pathname);
+      await m.mount(pre, source, { assets, base: location.pathname, links: links.length ? links : undefined }, at);
       return m;
     })
     .catch(() => {

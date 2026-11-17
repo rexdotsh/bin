@@ -5,6 +5,7 @@ type Hljs = { registerLanguage(name: string, lang: unknown): void; highlight(cod
 type Out = { html: string[]; lines: number[]; end: number };
 type Assets = Record<string, string>;
 type Parts = [string, string[], string];
+export type Ctx = { assets: Assets; base?: string; links?: string[]; ents?: Record<string, string> };
 
 const WORKER_MIN = 64 * 1024;
 const CHUNK = 32 * 1024;
@@ -22,13 +23,13 @@ const DROP = /<!--[\s\S]*?(?:-->|$)|<(script|style|textarea|title|template|noscr
 const TAG = /<(\/?)([a-z][a-z\d]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
 const ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
-let ents: Record<string, string> = {};
+let ctx: Ctx = { assets: {} };
 
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ESC[c]);
 const decode = (s: string) =>
   s.replace(/&(?:#(\d{1,7})|#x([\da-f]{1,6})|[a-z][a-z\d]{1,31});/gi, (m, d?: string, x?: string) => {
-    if (!d && !x) return ents[m] ?? m;
+    if (!d && !x) return ctx.ents?.[m] ?? m;
     const n = d ? Number(d) : parseInt(x!, 16);
     return n > 0 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff) ? String.fromCodePoint(n) : "\ufffd";
   });
@@ -45,10 +46,22 @@ function entities(text: string): Record<string, string> {
   return map;
 }
 
+function rel(s: string): string | null {
+  if (!ctx.links) return null;
+  try {
+    const u = new URL(s, `https://x${ctx.base}`);
+    const path = decodeURIComponent(u.pathname);
+    const hit = u.origin === "https://x" && ctx.links.find((l) => decodeURIComponent(l) === path);
+    return hit ? hit + (u.hash && `#md-${u.hash.slice(1)}`) : null;
+  } catch {
+    return null;
+  }
+}
+
 function url(href: string, img?: boolean): string | null {
   const s = decode(href).trim();
   if (!img && s[0] === "#") return `#md-${s.slice(1)}`;
-  if (!(img ? /^https?:/i : /^(?:https?|mailto):/i).test(s)) return null;
+  if (!(img ? /^https?:/i : /^(?:https?|mailto):/i).test(s)) return img ? null : rel(s);
   try {
     const u = new URL(s);
     if (img && u.protocol === "http:") u.protocol = "https:";
@@ -277,23 +290,23 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
   return out;
 }
 
-function langsOf(ts: T[], assets: Assets, found = new Set<string>()): Set<string> {
+function langsOf(ts: T[], found = new Set<string>()): Set<string> {
   for (const t of ts) {
     if (t.type === "code" && !t.codeBlockStyle) {
       const l = fence(t.lang);
-      if (/^[a-z]+$/.test(l) && l !== "core" && l !== "auto" && assets[`hl/${l}.js`]) found.add(l);
+      if (/^[a-z]+$/.test(l) && l !== "core" && l !== "auto" && ctx.assets[`hl/${l}.js`]) found.add(l);
     }
-    if (t.tokens) langsOf(t.tokens, assets, found);
-    if (t.items) langsOf(t.items, assets, found);
+    if (t.tokens) langsOf(t.tokens, found);
+    if (t.items) langsOf(t.items, found);
   }
   return found;
 }
 
-async function hljs(langs: Set<string>, assets: Assets): Promise<Hljs | null> {
+async function hljs(langs: Set<string>): Promise<Hljs | null> {
   if (!langs.size) return null;
   try {
-    const core = (await import(assets["hl/core.js"])).default as Hljs;
-    await Promise.all([...langs].map(async (l) => core.registerLanguage(l, (await import(assets[`hl/${l}.js`])).default)));
+    const core = (await import(ctx.assets["hl/core.js"])).default as Hljs;
+    await Promise.all([...langs].map(async (l) => core.registerLanguage(l, (await import(ctx.assets[`hl/${l}.js`])).default)));
     return core;
   } catch {
     return null;
@@ -309,23 +322,23 @@ const paint = (core: Hljs) => (code: string, language: string) => {
 };
 
 if (typeof document === "undefined") {
-  addEventListener("message", async (e: MessageEvent<{ text: string; assets: Assets; ents: Record<string, string> }>) => {
+  addEventListener("message", async (e: MessageEvent<{ text: string; ctx: Ctx }>) => {
     let out: Out | null = null;
     try {
-      ents = e.data.ents;
+      ctx = e.data.ctx;
       const tokens = Lexer.lex(e.data.text) as T[];
-      const core = await hljs(langsOf(tokens, e.data.assets), e.data.assets);
+      const core = await hljs(langsOf(tokens));
       out = render(tokens, core && paint(core));
     } catch {}
     postMessage(out);
   });
 }
 
-function offThread(text: string, assets: Assets, src: string): Promise<Out | null | undefined> {
+function offThread(text: string): Promise<Out | null | undefined> {
   return new Promise((resolve) => {
     let w: Worker;
     try {
-      w = new Worker(src, { type: "module" });
+      w = new Worker(ctx.assets["md.js"], { type: "module" });
     } catch {
       return resolve(undefined);
     }
@@ -337,7 +350,7 @@ function offThread(text: string, assets: Assets, src: string): Promise<Out | nul
     const timer = setTimeout(done, 3000 + text.length / 1000, null);
     w.onmessage = (e: MessageEvent<Out | null>) => done(e.data);
     w.onerror = () => done();
-    w.postMessage({ text, assets, ents });
+    w.postMessage({ text, ctx });
   });
 }
 
@@ -347,13 +360,13 @@ let blocks: HTMLCollection | null = null;
 let starts: number[] = [];
 let end = 1;
 
-export async function mount(after: HTMLElement, text: string, assets: Assets, at?: number): Promise<void> {
+export async function mount(after: HTMLElement, text: string, c: Ctx, at?: number): Promise<void> {
   const doc = document.createElement("article");
   doc.className = "md";
   after.after(doc);
   try {
-    ents = entities(text);
-    let out = text.length > WORKER_MIN ? await offThread(text, assets, assets["md.js"]) : undefined;
+    ctx = { ...c, ents: entities(text) };
+    let out = text.length > WORKER_MIN ? await offThread(text) : undefined;
     if (out === null) throw new Error("md");
     let tokens: T[] | null = null;
     out ??= render((tokens = Lexer.lex(text) as T[]), null);
@@ -381,7 +394,7 @@ export async function mount(after: HTMLElement, text: string, assets: Assets, at
       if (at) scrollTo(0, y(at) ?? 0);
       else if (h.startsWith("md-")) document.getElementById(h)?.scrollIntoView();
     }
-    if (tokens) colour(doc, langsOf(tokens, assets), assets);
+    if (tokens) colour(doc, langsOf(tokens));
   } catch (e) {
     doc.remove();
     blocks = null;
@@ -409,8 +422,8 @@ function more(box: HTMLElement): Element {
   return n.tBodies[0];
 }
 
-async function colour(doc: HTMLElement, langs: Set<string>, assets: Assets) {
-  const core = await hljs(langs, assets);
+async function colour(doc: HTMLElement, langs: Set<string>) {
+  const core = await hljs(langs);
   if (!core) return;
   let t = performance.now();
   for (const c of doc.querySelectorAll<HTMLElement>("code[data-hl]")) {
