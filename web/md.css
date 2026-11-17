@@ -1,4 +1,5 @@
 .fmt #text { display: none; }
+.mdp:not(.fmt) .md { display: none; }
 .mdp:not(.fmt) #mdv { background: var(--soft); color: var(--fg); }
 .foot [data-k="m"] { color: var(--fg); }
 .foot [data-k="m"]::after { content: "formatted"; }
