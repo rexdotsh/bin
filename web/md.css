@@ -31,6 +31,17 @@
 .md pre code { font: 13px/22px var(--mono); background: none; border: 0; padding: 0; }
 .md blockquote { border-left: 2px solid var(--edge); padding-left: 16px; color: var(--mute2); }
 .md blockquote > :last-child { margin-bottom: 0; }
+.md .alert { color: var(--fg); border-left-color: var(--c); }
+.md .alert::before { content: var(--t); display: block; color: var(--c); font-weight: 600; }
+.md .note { --c: var(--blue); --t: "Note"; }
+.md .tip { --c: var(--green); --t: "Tip"; }
+.md .important { --c: var(--violet); --t: "Important"; }
+.md .warning { --c: var(--amber); --t: "Warning"; }
+.md .caution { --c: var(--red); --t: "Caution"; }
+.md .da { color: var(--green); }
+.md .dd { color: var(--red); }
+.md .dh { color: var(--blue); }
+.md .dm { font-weight: 600; }
 .md kbd { display: inline-block; font: 0.82em/1.5 var(--mono); color: var(--fg); margin: 0; padding: 0 0.45em; border: 1px solid var(--edge); border-bottom-width: 2px; border-radius: 5px; }
 .md summary { cursor: pointer; }
 .md .al-center { text-align: center; }

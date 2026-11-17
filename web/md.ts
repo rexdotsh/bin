@@ -12,10 +12,11 @@ const ALIAS: Record<string, string> = {
   ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript", js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
   py: "python", rs: "rust", golang: "go", rb: "ruby", kt: "kotlin", "c++": "cpp", cc: "cpp", hpp: "cpp", h: "c", cs: "csharp", "c#": "csharp",
   sh: "bash", shell: "bash", zsh: "bash", jsonc: "json", yml: "yaml", toml: "ini", md: "markdown", html: "xml", htm: "xml", svg: "xml", vue: "xml",
-  pl: "perl", gql: "graphql", docker: "dockerfile", make: "makefile", mk: "makefile",
+  pl: "perl", gql: "graphql", docker: "dockerfile", make: "makefile", mk: "makefile", patch: "diff",
 };
 const REL = ' rel="noopener noreferrer nofollow ugc"';
 const IMG = ' loading="lazy" decoding="async" referrerpolicy="no-referrer"';
+const ALERT = /^\[!(note|tip|important|warning|caution)\][ \t]*(?:\n|$)/i;
 const TAGS = new Set("a b blockquote br code del details div em h1 h2 h3 h4 h5 h6 hr i img ins kbd li mark ol p pre s small span strong sub summary sup table tbody td tfoot th thead tr u ul".split(" "));
 const DROP = /<!--[\s\S]*?(?:-->|$)|<(script|style|textarea|title|template|noscript|iframe|svg|math)\b[\s\S]*?(?:<\/\1\s*>|$)/gi;
 const TAG = /<(\/?)([a-z][a-z\d]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
@@ -47,9 +48,10 @@ function entities(text: string): Record<string, string> {
 function url(href: string, img?: boolean): string | null {
   const s = decode(href).trim();
   if (!img && s[0] === "#") return `#md-${s.slice(1)}`;
-  if (!(img ? /^https:/i : /^(?:https?|mailto):/i).test(s)) return null;
+  if (!(img ? /^https?:/i : /^(?:https?|mailto):/i).test(s)) return null;
   try {
     const u = new URL(s);
+    if (img && u.protocol === "http:") u.protocol = "https:";
     return /^(?:https?|mailto):$/.test(u.protocol) && (!img || u.protocol === "https:") ? u.href : null;
   } catch {
     return null;
@@ -156,6 +158,11 @@ function cut(html: string): string[] {
   return out;
 }
 
+const diff = (l: string) => {
+  const c = /^(?:\+\+\+|---)/.test(l) ? "dm" : l[0] === "+" ? "da" : l[0] === "-" ? "dd" : l.startsWith("@@") ? "dh" : "";
+  return c ? `<span class="${c}">${esc(l)}</span>` : esc(l);
+};
+
 function render(tokens: T[], hl: ((code: string, lang: string) => string | null) | null): Out {
   const used = new Set<string>();
   const seen = new Map<string, number>();
@@ -189,12 +196,20 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
           t.rows.map((r: T[]) => `<tr>${r.map((c) => cell("td", c)).join("")}</tr>`),
           "</tbody></table></div>",
         ];
-      case "blockquote":
-        return ["<blockquote>", each(t.tokens!), "</blockquote>"];
+      case "blockquote": {
+        const ts = t.tokens!;
+        const first = (ts[0]?.type === "paragraph" ? ts[0].tokens?.[0] : undefined) as T | undefined;
+        const m = first?.type === "text" && !first.tokens ? ALERT.exec(first.text) : null;
+        if (m) {
+          first!.text = first!.text.slice(m[0].length);
+          if (!first!.text) (ts[0] as T).tokens!.shift();
+        }
+        return [`<blockquote${m ? ` class="alert ${m[1].toLowerCase()}"` : ""}>`, each(ts), "</blockquote>"];
+      }
       case "code": {
         const lang = t.codeBlockStyle ? "" : fence(t.lang);
-        const code = (lang && hl && hl(t.text, lang)) || esc(t.text);
-        const open = `<code${lang && !hl ? ` data-hl="${esc(lang)}"` : ""}>`;
+        const code = lang === "diff" ? t.text.split("\n").map(diff).join("\n") : (lang && hl && hl(t.text, lang)) || esc(t.text);
+        const open = `<code${lang && lang !== "diff" && !hl ? ` data-hl="${esc(lang)}"` : ""}>`;
         return code.length > CHUNK ? ["<pre>", cut(code).map((c) => `<div>${open}${c}</code></div>`), "</pre>"] : [`<pre>${open}`, [code], "</code></pre>"];
       }
     }
