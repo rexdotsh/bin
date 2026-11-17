@@ -11,7 +11,7 @@ curl -T crash.log https://bin.rex.wf
 - **Read only what you need.** `?head=50`, `?tail=50`, `?lines=10-80`, `?grep=error&context=3`, and `?digest` for a log's errors, repeated warnings and tail with line numbers.
 - **`bin run -- bun test`** runs a command, then pastes its output with the command, exit code and duration.
 - **Multi-file pastes**, diffs (`/a/vs/b`), password pastes encrypted in your browser, Ctrl+V on the home page to paste instantly, keyboard shortcuts, dark and light themes.
-- **No accounts.** Anonymous pastes are fine; nothing pasted is ever rendered as HTML (raw HTML in markdown shows as text).
+- **No accounts.** Anonymous pastes are fine; nothing pasted is ever rendered as HTML as written (in markdown, a small allowlist of tags such as `<details>`, `<img>` and `<p align=center>` is rebuilt with safe attributes; everything else is dropped).
 
 ## CLI
 
