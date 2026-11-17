@@ -33,7 +33,7 @@ a { color: inherit; }
 button, input, select, textarea { font: inherit; color: inherit; }
 svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; display: block; flex: none; }
 [hidden] { display: none !important; }
-body * { scrollbar-width: thin; scrollbar-color: var(--gut) transparent; }
+:root, body * { scrollbar-width: thin; scrollbar-color: var(--gut) transparent; }
 .wrap { width: min(980px, 100% - 2 * var(--side)); margin: 0 auto; }
 .sp { flex: 1; }
 .muted { color: var(--mute); }
