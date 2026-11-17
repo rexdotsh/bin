@@ -14,16 +14,27 @@ const ALIAS: Record<string, string> = {
   pl: "perl", gql: "graphql", docker: "dockerfile", make: "makefile", mk: "makefile",
 };
 
+let ents: Record<string, string> = {};
+
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ESC[c]);
-const txt = (s: string) => s.replace(/&(?!#\d{1,7};|#x[\da-f]{1,6};|[a-z][a-z\d]{1,31};)|[<>"]/gi, (c) => ESC[c]);
-const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 const decode = (s: string) =>
-  s.replace(/&(#\d{1,7}|#x[\da-f]{1,6}|amp|lt|gt|quot|apos);/gi, (_, e: string) => {
-    if (e[0] !== "#") return NAMED[e.toLowerCase()];
-    const n = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : Number(e.slice(1));
-    return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "\ufffd";
+  s.replace(/&(?:#(\d{1,7})|#x([\da-f]{1,6})|[a-z][a-z\d]{1,31});/gi, (m, d?: string, x?: string) => {
+    if (!d && !x) return ents[m] ?? m;
+    const n = d ? Number(d) : parseInt(x!, 16);
+    return n > 0 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff) ? String.fromCodePoint(n) : "\ufffd";
   });
+const txt = (s: string) => esc(decode(s));
+
+function entities(text: string): Record<string, string> {
+  const names = [...new Set(text.match(/&[a-z][a-z\d]{1,31};/gi))];
+  const t = document.createElement("textarea");
+  t.innerHTML = names.join("\x01");
+  const vals = t.value.split("\x01");
+  const map: Record<string, string> = {};
+  names.forEach((n, i) => vals[i] !== n && vals[i].length <= 2 && (map[n] = vals[i]));
+  return map;
+}
 
 function url(href: string, img?: boolean): string | null {
   const s = decode(href).trim();
@@ -37,9 +48,10 @@ function url(href: string, img?: boolean): string | null {
   }
 }
 
-const plain = (ts: T[] = []): string => ts.map((t) => (t.tokens ? plain(t.tokens) : typeof t.text === "string" ? t.text : "")).join("");
+const plain = (ts: T[] = []): string =>
+  ts.map((t) => (t.tokens ? plain(t.tokens) : t.type === "text" ? decode(t.text) : t.type === "escape" || t.type === "codespan" ? t.text : "")).join("");
 const fence = (info?: string) => {
-  const l = (info ?? "").trim().split(/\s/)[0].toLowerCase();
+  const l = decode(info ?? "").trim().split(/\s/)[0].toLowerCase();
   return Object.hasOwn(ALIAS, l) ? ALIAS[l] : l;
 };
 
@@ -97,7 +109,7 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
         return t.tokens ? inline(t.tokens) : txt(t.text);
       case "heading": {
         const d = Math.min(6, Math.max(1, Number(t.depth) || 1));
-        const base = decode(plain(t.tokens)).toLowerCase().trim().replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
+        const base = plain(t.tokens).toLowerCase().trim().replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
         let n = seen.get(base) ?? 0;
         let id = base;
         while (used.has(id)) id = `${base}-${++n}`;
@@ -182,9 +194,10 @@ const paint = (core: Hljs) => (code: string, language: string) => {
 };
 
 if (typeof document === "undefined") {
-  addEventListener("message", async (e: MessageEvent<{ text: string; assets: Assets }>) => {
+  addEventListener("message", async (e: MessageEvent<{ text: string; assets: Assets; ents: Record<string, string> }>) => {
     let out: Out | null = null;
     try {
+      ents = e.data.ents;
       const tokens = Lexer.lex(e.data.text) as T[];
       const core = await hljs(langsOf(tokens, e.data.assets), e.data.assets);
       out = render(tokens, core && paint(core));
@@ -209,7 +222,7 @@ function offThread(text: string, assets: Assets, src: string): Promise<Out | nul
     const timer = setTimeout(done, 3000 + text.length / 1000, null);
     w.onmessage = (e: MessageEvent<Out | null>) => done(e.data);
     w.onerror = () => done();
-    w.postMessage({ text, assets });
+    w.postMessage({ text, assets, ents });
   });
 }
 
@@ -223,6 +236,7 @@ export async function mount(after: HTMLElement, text: string, assets: Assets): P
   doc.className = "md";
   after.after(doc);
   try {
+    ents = entities(text);
     let out = text.length > WORKER_MIN ? await offThread(text, assets, assets["md.js"]) : undefined;
     if (out === null) throw new Error("md");
     let tokens: T[] | null = null;
