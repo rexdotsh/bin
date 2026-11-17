@@ -5,7 +5,7 @@ description: Share text, logs, code, command output or diffs as a short link wit
 
 # bin
 
-`bin` pastes text to https://bin.rex.wf and returns a short link. Links work for people (a viewer) and for agents (plain text). Pastes never change once made. Use tack instead for HTML docs.
+`bin` pastes text to https://bin.rex.wf and returns a short link. Links work for people (a viewer; `.md` pastes show formatted) and for agents (plain text). Pastes never change once made. Use tack instead for HTML docs.
 
 ## Share something
 
