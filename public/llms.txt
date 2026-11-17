@@ -8,9 +8,11 @@ Create
   Options go in the query string: title=...  lang=...  ttl=1h|1d|7d|30d|never (default never)
   The response is the link. Anonymous pastes also get a delete command.
   Send "Accept: application/json" (or add ?json) for a JSON receipt.
+  Images in markdown: bin is text only, so upload the image elsewhere and link it, e.g.
+  curl -F "file=@shot.png" https://x0.at/   (public, no account, kept 3-100 days), then ![alt](https://x0.at/...)
 
 Read
-  Browsers get a viewer. Everything else gets plain text, with terminal colours stripped.
+  Browsers get a viewer (markdown pastes show formatted). Everything else gets plain text, with terminal colours stripped.
   GET /<id>                          the paste
   GET /<id>?head=50  ?tail=50  ?lines=10-80   a slice (add &n=1 to number the lines)
   GET /<id>?grep=<text>&context=3    matching lines, like grep -n -C 3 (text, | for or, ^ $ anchors, .* wildcard)

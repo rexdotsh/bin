@@ -16,9 +16,11 @@ export type View = {
   file?: string;
   diff?: string;
   hl?: string[] | null;
+  md?: boolean;
 };
 
-export const asset = (name: string): string => (Object.hasOwn(ASSETS, name) ? (ASSETS as Record<string, string>)[name] : "");
+export const assets = ASSETS as Record<string, string>;
+export const asset = (name: string): string => (Object.hasOwn(assets, name) ? assets[name] : "");
 
 export const INLINE_MAX = 512 * 1024;
 export const LINE_PX = 24;
@@ -67,8 +69,9 @@ const svg = (d: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</sv
 export const THEME_BUTTON = `<button id="theme" class="ib" title="Light or dark (t)">${svg('<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>').replace("<svg", '<svg class="moon"')}${svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>').replace("<svg", '<svg class="sun"')}</button>`;
 export const LOCK_ICON = svg('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>');
 
-function icons(raw: string | null, dl: string | null): string {
+function icons(raw: string | null, dl: string | null, md?: boolean): string {
   return [
+    md === undefined ? "" : `<button id="mdv" class="ib" title="${md ? "Source" : "Formatted"} (m)">${svg('<path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/>')}</button>`,
     `<button id="del" class="ib" title="Delete" hidden>${svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>')}</button>`,
     `<button id="copy" class="ib" title="Copy (y)">${svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>')}</button>`,
     raw ? `<a id="raw" class="ib" href="${raw}" title="Raw (r)">${svg('<path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>')}</a>` : "",
@@ -125,16 +128,16 @@ export function viewBody(v: View): { cls: string; html: string } {
   };
   const shown = v.diff ? esc(v.diff.replace("/vs/", " vs ")) : `<b>${esc(id)}</b>${v.ext ? `.${esc(v.ext)}` : ""}`;
   const html = `<header class="top wrap"><a class="mark" href="/">bin</a><span class="crumb">/ ${shown}<span id="hash"></span></span><span class="sp"></span>
-<nav class="acts">${icons(raw, dl)}</nav></header>
+<nav class="acts">${icons(raw, dl, v.md)}</nav></header>
 <main class="wrap">
 ${heading ? `<h1>${esc(heading)}</h1>` : ""}<div class="meta">${facts.join("")}</div>
 ${tabs}${locked ? `<form id="unlock" class="unlock"><p>This paste is encrypted. The password never leaves your browser.</p><div><input type="password" id="pw" class="field" placeholder="password" autocomplete="off" aria-label="Password" autofocus><button class="btn">Unlock</button></div><p id="pwerr" class="bad" hidden>wrong password</p></form>` : ""}
 <pre id="text" class="code" style="${style}"${locked ? " hidden" : ""}>
 ${body}</pre>
 </main>
-<footer class="foot"><div class="wrap">${KEYS.map(([k, label]) => `<button data-k="${k}"><kbd>${k}</kbd>${label}</button>`).join("")}<span class="sp"></span><span>${esc(v.host)}</span></div></footer>
+<footer class="foot"><div class="wrap">${v.md === undefined ? "" : '<button data-k="m"><kbd>m</kbd></button>'}${KEYS.map(([k, label]) => `<button data-k="${k}"><kbd>${k}</kbd>${label}</button>`).join("")}<span class="sp"></span><span>${esc(v.host)}</span></div></footer>
 <div id="find" class="find" hidden><input id="q" placeholder="find" autocomplete="off" aria-label="Find"><span id="count"></span><button id="qx" class="ib" aria-label="Close">${svg('<path d="M6 6l12 12M18 6L6 18"/>')}</button></div>
 ${v.ansi !== undefined && !big ? `<template id="ansi">${escRaw(v.ansi)}</template>` : ""}<script type="application/json" id="data">${safeJson(data)}</script>`;
-  const cls = ["view", v.wrap && "wrap-on", (locked || big) && "tall"].filter(Boolean).join(" ");
+  const cls = ["view", v.wrap && "wrap-on", v.md !== undefined && "mdp", v.md && "fmt", (locked || big || v.md) && "tall"].filter(Boolean).join(" ");
   return { cls, html };
 }

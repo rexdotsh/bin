@@ -5,7 +5,7 @@ description: Share text, logs, code, command output or diffs as a short link wit
 
 # bin
 
-`bin` pastes text to https://bin.rex.wf and returns a short link. Links work for people (a viewer) and for agents (plain text). Pastes never change once made. Use tack instead for HTML docs.
+`bin` pastes text to https://bin.rex.wf and returns a short link. Links work for people (a viewer; `.md` pastes show formatted) and for agents (plain text). Pastes never change once made. Use tack instead for HTML docs.
 
 ## Share something
 
@@ -15,6 +15,13 @@ description: Share text, logs, code, command output or diffs as a short link wit
 - Options: `--title "..."`, `--ttl 1h|1d|7d|30d` (default: never expires), `--json` for a machine-readable receipt.
 
 Reply with the link the command prints.
+
+## Images in markdown
+
+bin stores text only, but a formatted `.md` paste shows `![alt](https://...)` images inline. To include a local image (a screenshot, a chart), upload it first and link the URL it returns:
+
+- `curl -F "file=@shot.png" https://x0.at/` prints a public link like `https://x0.at/Fj8M.png`. No account. Kept 3–100 days depending on size (a few MB lasts about 100), so for something permanent use a place the user controls (their own repo or host).
+- Uploads are public. Only upload images the user is fine sharing; never screenshots with secrets or personal data.
 
 ## Secrets
 

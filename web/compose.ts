@@ -86,15 +86,18 @@ function copier(): (url: string | null) => Promise<unknown> {
   };
 }
 
-function preload(paths: string[]) {
+function preload(paths: string[], rel = "modulepreload") {
   for (const href of paths) {
     if (document.querySelector(`link[href="${href}"]`)) continue;
     const link = document.createElement("link");
-    link.rel = "modulepreload";
+    link.rel = rel;
     link.href = href;
+    if (rel === "preload") link.as = "style";
     document.head.append(link);
   }
 }
+
+const markdown = (l: string | null | undefined) => l === "markdown";
 
 async function save(text = t.value) {
   if (busy) return;
@@ -123,7 +126,10 @@ async function save(text = t.value) {
     t.readOnly = true;
   }
   const copy = copier();
-  if (!enc && (lang.value !== "auto" || !name)) preload(hlModules(lang.value === "auto" ? "" : lang.value, text) ?? []);
+  if (markdown(lang.value) || (lang.value === "auto" && /\.(md|markdown)$/i.test(name))) {
+    preload([asset("view-md.js"), asset("md.js")]);
+    preload([asset("md.css")], "preload");
+  } else if (!enc && (lang.value !== "auto" || !name)) preload(hlModules(lang.value === "auto" ? "" : lang.value, text) ?? []);
   let r: Receipt;
   try {
     const params = new URLSearchParams();
@@ -154,13 +160,13 @@ async function save(text = t.value) {
   const copied = copy(r.url);
   if (r.delete) store("localStorage", `bin:del:${r.id}`, r.delete);
   try {
-    show(r, text, enc, copied);
+    await show(r, text, enc, copied);
   } catch {
     location.assign(r.url);
   }
 }
 
-function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) {
+async function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) {
   const path = new URL(r.url!).pathname;
   const meta: Record<string, string> = { lines: String(r.lines ?? toLines(text).plain.length), bytes: String(r.bytes ?? 0) };
   if (r.lang) meta.lang = r.lang;
@@ -176,7 +182,16 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
     meta,
     text: stripAnsi(text),
     ansi: text.includes("\x1b") ? text : undefined,
+    md: markdown(r.lang) ? cookie("md") !== "0" : undefined,
   });
+  if (markdown(r.lang)) {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = asset("md.css");
+    const ready = new Promise((r) => (css.onload = css.onerror = r));
+    document.head.append(css);
+    await ready;
+  }
   listening.abort();
   t.remove();
   document.body.className = cls;
@@ -190,7 +205,7 @@ function show(r: Receipt, text: string, enc: boolean, copied: Promise<unknown>) 
       () => toast("saved · link copied", 1800),
       () => toast("saved", 1800),
     )
-    .then(() => requestAnimationFrame(() => setTimeout(() => load(asset("view.js")).catch(() => location.reload()))));
+    .then(() => requestAnimationFrame(() => setTimeout(() => load(asset(markdown(r.lang) ? "view-md.js" : "view.js")).catch(() => location.reload()))));
 }
 
 saveBtn.addEventListener("click", () => save(), opts);

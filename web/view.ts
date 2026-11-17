@@ -1,9 +1,11 @@
-import { asset, gutter, hlModules, lineCount } from "../src/page";
+import { asset, assets, gutter, hlModules, lineCount } from "../src/page";
 import { highlight } from "./hl";
 import { decrypt } from "./crypto";
 import { ANSI_RE, dropStray, SGR_RE, stripAnsi, toLines, visible } from "../src/text";
 import { toggleTheme } from "./theme";
 import { setCookie, store, stored, toast } from "./ui";
+
+declare const MD: boolean;
 
 type Data = {
   id: string;
@@ -284,6 +286,12 @@ async function render(raw: string) {
   ansi = raw.includes("\x1b");
   count = lines.length;
   ready = true;
+  if (MD) {
+    source = raw;
+    if (built) return;
+    if (fmt()) return void (/^#L\d/.test(location.hash) ? show(false) : formatted());
+    built = true;
+  }
   const mods = ansi ? null : data.hl === undefined ? hlModules(data.lang, raw) : data.hl;
   const text = mods ? plain.join("\n") : "";
   if (mods && mods.length > 1 && text.length < HL_INLINE) hlRows = await highlight(mods, data.lang, text);
@@ -294,6 +302,54 @@ async function render(raw: string) {
   if (!hl) return;
   hlRows = hl;
   painted.forEach((on, i) => on && paint(i));
+}
+
+// ---------------------------------------------------------------- markdown
+
+let source = "";
+let built = false;
+let md: Promise<typeof import("./md") | null> | null = null;
+const fmt = () => MD && document.body.classList.contains("fmt");
+
+function formatted() {
+  return (md ??= import(asset("md.js")).then(
+    async (m: typeof import("./md")) => {
+      await m.mount(pre, source, assets);
+      return m;
+    },
+    () => {
+      md = null;
+      show(false);
+      toast("couldn't format this");
+      return null;
+    },
+  ));
+}
+
+function topLine(): [number, number] | null {
+  const r = topRow();
+  if (!r) return null;
+  const b = r.classList.contains("b") ? r : r.parentElement!;
+  const at = (p: Element, c: Element) => Array.prototype.indexOf.call(p.children, c) as number;
+  return [at(pre, b) * BLOCK + (r === b ? 0 : at(b, r)) + 1, r.getBoundingClientRect().top];
+}
+
+async function show(on: boolean, keep = false) {
+  if (!loaded()) return;
+  const m = md && (await md);
+  const was = scrollY > 0 && (on || !/^#L\d/.test(location.hash)) && (fmt() ? (m?.top() ?? null) : built ? topLine() : null);
+  document.body.classList.toggle("fmt", on);
+  $("mdv").title = `${on ? "Source" : "Formatted"} (m)`;
+  if (keep) setCookie("md", on ? "1" : "0");
+  if (on && sel) select(0, -1);
+  let target: Element | null | undefined;
+  if (on) target = (await formatted())?.at(was ? was[0] : 1);
+  else {
+    if (!built) await render(source);
+    if (was && !painted[(was[0] - 1) >> 8]) paint((was[0] - 1) >> 8);
+    target = was ? line(was[0]) : null;
+  }
+  if (was && target) scrollBy(0, target.getBoundingClientRect().top - was[1]);
 }
 
 // ---------------------------------------------------------------- selection
@@ -316,6 +372,7 @@ function select(a: number, b: number) {
 function fromHash() {
   const m = location.hash.match(/^#L(\d+)(?:-L?(\d+))?$/);
   if (!m || !count) return;
+  if (MD && fmt()) return void show(false).then(fromHash);
   anchor = Number(m[1]);
   select(anchor, Number(m[2] ?? m[1]));
   if (sel) reveal(sel[0]);
@@ -460,9 +517,11 @@ document.addEventListener("keydown", (e) => {
     },
     Escape: () => (findBox.hidden ? select(0, -1) : closeBox()),
   };
+  if (MD) actions.m = () => show(!fmt(), true);
   const fn = actions[e.key];
   if (!fn) return;
   e.preventDefault();
+  if (MD && fmt() && (e.key === "/" || e.key === "g")) show(false);
   fn();
 });
 
@@ -471,6 +530,7 @@ document.querySelector(".foot")!.addEventListener("click", (e) => {
   if (key) document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
 });
 $("qx").addEventListener("click", closeBox);
+if (MD) $("mdv").addEventListener("click", () => show(!fmt(), true));
 
 // ---------------------------------------------------------------- start
 
