@@ -82,6 +82,7 @@ function inline(ts: T[] = []): string {
 }
 
 function render(tokens: T[], hl: ((code: string, lang: string) => string | null) | null): Out {
+  const used = new Set<string>();
   const seen = new Map<string, number>();
   const cell = (tag: string, c: T) => `<${tag}${c.align === "center" ? ' class="c"' : c.align === "right" ? ' class="r"' : ""}>${inline(c.tokens)}</${tag}>`;
   const block = (t: T): string => {
@@ -93,9 +94,12 @@ function render(tokens: T[], hl: ((code: string, lang: string) => string | null)
       case "heading": {
         const d = Math.min(6, Math.max(1, Number(t.depth) || 1));
         const base = decode(plain(t.tokens)).toLowerCase().trim().replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
-        const n = seen.get(base) ?? 0;
-        seen.set(base, n + 1);
-        return `<h${d} id="md-${esc(n ? `${base}-${n}` : base)}">${inline(t.tokens)}</h${d}>`;
+        let n = seen.get(base) ?? 0;
+        let id = base;
+        while (used.has(id)) id = `${base}-${++n}`;
+        seen.set(base, n);
+        used.add(id);
+        return `<h${d} id="md-${esc(id)}">${inline(t.tokens)}</h${d}>`;
       }
       case "code": {
         const lang = t.codeBlockStyle ? "" : fence(t.lang);
