@@ -1124,7 +1124,7 @@ ${options("ttl", "Expires", [["never", "never"], ["1h", "in 1 hour"], ["1d", "in
 <span class="sp"></span><span id="status" role="status"></span><button id="save" class="btn">Save <kbd>${mod}S</kbd></button>
 </footer>
 <script type="application/json" id="data">${safeJson({ mod, secrets })}</script>
-</body></html>`);
+</body></html>`, 200, true);
 }
 
 const FONT_FILES = [...CSS.matchAll(/url\("?(\/fonts\/[^)"]+)"?\)/g)].map((m) => m[1]);
