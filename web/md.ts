@@ -176,28 +176,32 @@ const paint = (core: Hljs) => (code: string, language: string) => {
 
 if (typeof document === "undefined") {
   addEventListener("message", async (e: MessageEvent<{ text: string; assets: Assets }>) => {
-    const tokens = Lexer.lex(e.data.text) as T[];
-    const core = await hljs(langsOf(tokens, e.data.assets), e.data.assets);
-    postMessage(render(tokens, core && paint(core)));
+    let out: Out | null = null;
+    try {
+      const tokens = Lexer.lex(e.data.text) as T[];
+      const core = await hljs(langsOf(tokens, e.data.assets), e.data.assets);
+      out = render(tokens, core && paint(core));
+    } catch {}
+    postMessage(out);
   });
 }
 
-function offThread(text: string, assets: Assets, src: string): Promise<Out | null> {
+function offThread(text: string, assets: Assets, src: string): Promise<Out | null | undefined> {
   return new Promise((resolve) => {
     let w: Worker;
     try {
       w = new Worker(src, { type: "module" });
     } catch {
-      return resolve(null);
+      return resolve(undefined);
     }
-    w.onmessage = (e: MessageEvent<Out>) => {
+    const done = (out?: Out | null) => {
+      clearTimeout(timer);
       w.terminate();
-      resolve(e.data);
+      resolve(out);
     };
-    w.onerror = () => {
-      w.terminate();
-      resolve(null);
-    };
+    const timer = setTimeout(done, 3000 + text.length / 1000, null);
+    w.onmessage = (e: MessageEvent<Out | null>) => done(e.data);
+    w.onerror = () => done();
     w.postMessage({ text, assets });
   });
 }
@@ -211,20 +215,30 @@ export async function mount(after: HTMLElement, text: string, assets: Assets): P
   const doc = document.createElement("article");
   doc.className = "md";
   after.after(doc);
-  blocks = doc.children;
-  let out = text.length > WORKER_MIN ? await offThread(text, assets, assets["md.js"]) : null;
-  let tokens: T[] | null = null;
-  if (!out) out = render((tokens = Lexer.lex(text) as T[]), null);
-  starts = out.lines;
-  for (let i = 0; i < out.html.length; ) {
-    let html = "";
-    while (i < out.html.length && html.length < CHUNK) html += out.html[i++];
-    doc.insertAdjacentHTML("beforeend", html);
-    if (i < out.html.length) await frame();
+  try {
+    let out = text.length > WORKER_MIN ? await offThread(text, assets, assets["md.js"]) : undefined;
+    if (out === null) throw new Error("md");
+    let tokens: T[] | null = null;
+    out ??= render((tokens = Lexer.lex(text) as T[]), null);
+    blocks = doc.children;
+    starts = out.lines;
+    for (let i = 0; i < out.html.length; ) {
+      let html = "";
+      while (i < out.html.length && html.length < CHUNK) html += out.html[i++];
+      doc.insertAdjacentHTML("beforeend", html);
+      if (i < out.html.length) await frame();
+    }
+    let h = location.hash.slice(1);
+    try {
+      h = decodeURIComponent(h);
+    } catch {}
+    if (!scrollY && h.startsWith("md-")) document.getElementById(h)?.scrollIntoView();
+    if (tokens) colour(doc, langsOf(tokens, assets), assets);
+  } catch (e) {
+    doc.remove();
+    blocks = null;
+    throw e;
   }
-  const hash = location.hash.startsWith("#md-") && document.getElementById(decodeURIComponent(location.hash.slice(1)));
-  if (hash) hash.scrollIntoView();
-  if (tokens) colour(doc, langsOf(tokens, assets), assets);
 }
 
 async function colour(doc: HTMLElement, langs: Set<string>, assets: Assets) {

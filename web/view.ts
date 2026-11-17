@@ -309,21 +309,22 @@ async function render(raw: string) {
 let source = "";
 let built = false;
 let md: Promise<typeof import("./md") | null> | null = null;
+let mod: typeof import("./md") | null = null;
 const fmt = () => MD && document.body.classList.contains("fmt");
 
 function formatted() {
-  return (md ??= import(asset("md.js")).then(
-    async (m: typeof import("./md")) => {
+  return (md ??= import(asset("md.js"))
+    .then(async (m: typeof import("./md")) => {
+      mod = m;
       await m.mount(pre, source, assets);
       return m;
-    },
-    () => {
+    })
+    .catch(() => {
       md = null;
-      show(false);
+      if (fmt()) show(false);
       toast("couldn't format this");
       return null;
-    },
-  ));
+    }));
 }
 
 function topLine(): [number, number] | null {
@@ -336,16 +337,18 @@ function topLine(): [number, number] | null {
 
 async function show(on: boolean, keep = false) {
   if (!loaded()) return;
-  const m = md && (await md);
-  const was = scrollY > 0 && (on || !/^#L\d/.test(location.hash)) && (fmt() ? (m?.top() ?? null) : built ? topLine() : null);
+  const was = scrollY > 0 && (on || !/^#L\d/.test(location.hash)) && (fmt() ? (mod?.top() ?? null) : built ? topLine() : null);
   document.body.classList.toggle("fmt", on);
   $("mdv").title = `${on ? "Source" : "Formatted"} (m)`;
   if (keep) setCookie("md", on ? "1" : "0");
   if (on && sel) select(0, -1);
   let target: Element | null | undefined;
-  if (on) target = (await formatted())?.at(was ? was[0] : 1);
-  else {
+  if (on) {
+    target = (await formatted())?.at(was ? was[0] : 1);
+    if (!fmt()) return;
+  } else {
     if (!built) await render(source);
+    if (fmt()) return;
     if (was && !painted[(was[0] - 1) >> 8]) paint((was[0] - 1) >> 8);
     target = was ? line(was[0]) : null;
   }
