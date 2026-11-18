@@ -386,7 +386,7 @@ async function read(...args: Parameters<typeof readPaste>): Promise<Response> {
   const res = await readPaste(...args);
   const maxAge = Number(res.headers.get("x-max-age") ?? 0);
   res.headers.delete("x-max-age");
-  if (res.status === 200 && maxAge > 0) res.headers.set("cache-control", `private, max-age=${maxAge}, no-transform`);
+  if (res.status === 200 && maxAge > 0 && !res.headers.get("content-type")?.startsWith("text/html")) res.headers.set("cache-control", `private, max-age=${maxAge}, no-transform`);
   return res;
 }
 
