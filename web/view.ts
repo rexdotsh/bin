@@ -458,6 +458,7 @@ const canEdit = delToken && data.etag;
 if (delToken && !data.diff) {
   const del = $<HTMLButtonElement>("del");
   $(canEdit ? "edit" : "del").hidden = false;
+  if (canEdit) document.querySelector('.foot [data-k="e"]')!.lastChild!.textContent = "edit";
   del.addEventListener("click", async () => {
     if (!confirm("Delete this paste for everyone?")) return;
     const res = await fetch(`/${data.id}`, { method: "DELETE", headers: { "x-delete": delToken } });

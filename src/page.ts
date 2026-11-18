@@ -90,7 +90,7 @@ function icons(raw: string | null, dl: string | null, md?: boolean): string {
   ].join("");
 }
 
-const KEYS = [["y", "copy"], ["r", "raw"], ["/", "find"], ["g", "line"], ["w", "wrap"], ["E", "edit as new"], ["t", "theme"]];
+const KEYS = [["y", "copy"], ["r", "raw"], ["/", "find"], ["g", "line"], ["w", "wrap"], ["e", "edit as new"], ["t", "theme"]];
 
 export function viewBody(v: View): { cls: string; html: string } {
   const { meta, id } = v;
