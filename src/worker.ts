@@ -803,11 +803,14 @@ function scanSecrets(body: string): string[] {
 function isEnvelope(body: string): boolean {
   try {
     const e = JSON.parse(body);
+    const size = (s: unknown) =>
+      typeof s === "string" && s.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(s) ? (s.length / 4) * 3 - (s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0) : -1;
     return (
       e?.v === 1 &&
-      typeof e.salt === "string" &&
-      typeof e.iv === "string" &&
-      typeof e.ct === "string" &&
+      e.kdf === "pbkdf2-sha256" &&
+      size(e.salt) === 16 &&
+      size(e.iv) === 12 &&
+      size(e.ct) >= 16 &&
       Number.isInteger(e.iter) &&
       e.iter >= 100_000 &&
       e.iter <= 5_000_000
