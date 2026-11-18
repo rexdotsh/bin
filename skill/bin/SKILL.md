@@ -5,7 +5,7 @@ description: Share text, logs, code, command output or diffs as a short link wit
 
 # bin
 
-`bin` pastes text to https://bin.rex.wf and returns a short link. Links work for people (a viewer; `.md` pastes show formatted) and for agents (plain text). Pastes can be edited by whoever made them, so a link may change after you read it (`x-bin-edited` says when). Use tack instead for HTML docs.
+`bin` pastes text to https://bin.rex.wf and returns a short link. Links work for people (a viewer; `.md` pastes show formatted) and for agents (plain text). Single-file pastes can be edited by whoever made them, so a link may change after you read it (`x-bin-edited` says when). Use tack instead for HTML docs.
 
 ## Share something
 
@@ -42,6 +42,6 @@ Bin links return plain text to non-browsers, so any fetch tool or `curl` works. 
 
 ## Other commands
 
-`bin put <id|url> <file>` (or stdin) replaces the text of a paste made from this machine (same link; `--title`, `--lang`, `--if-match <etag>` to refuse if it changed since you read it); for a multi-file paste, `bin put <id>/<file>`. `bin edit <id>` opens it in `$EDITOR`. Prefer editing over a new paste when the user wants to update a link they already shared. `bin rm <id>` deletes a paste made from this machine. `bin help` lists everything. `bin` needs no setup or token to paste.
+`bin put <id|url> <file>` (or stdin) replaces the text of a paste made from this machine (same link; `--title`, `--lang`, `--if-match <etag>` to refuse if it changed since you read it; multi-file pastes can't be edited). `bin edit <id>` opens it in `$EDITOR`. Prefer editing over a new paste when the user wants to update a link they already shared. `bin rm <id>` deletes a paste made from this machine. `bin help` lists everything. `bin` needs no setup or token to paste.
 
 If `bin` isn't installed, ask the user to install it (`curl -fsSL https://bin.rex.wf/install | sh`), or use plain curl: `curl --data-binary @file https://bin.rex.wf`.

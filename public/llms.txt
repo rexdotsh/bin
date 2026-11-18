@@ -28,8 +28,9 @@ Read
 Edit
   Pastes can change: whoever holds the delete token can replace the text. x-bin-edited says when it last did.
   curl -T new.txt https://bin.rex.wf/<id> -H 'x-delete: <token>' -H 'If-Match: <ETag from your read>'
-  PUT /<id>/<file> edits one file of a multi-file paste. Without If-Match the write is unconditional; a stale
-  If-Match gets 412. ?title= ?lang= ?name= change those. Encrypted pastes need a new envelope (bin put --password).
+  A stale If-Match gets 412; If-Match: * (or no If-Match, with x-delete) overwrites whatever is there.
+  ?title= ?lang= ?name= change those. Encrypted pastes need a new envelope (bin put --password).
+  Multi-file pastes can't be edited.
 
 Delete
   curl -X DELETE https://bin.rex.wf/<id> -H 'x-delete: <token from the receipt>'

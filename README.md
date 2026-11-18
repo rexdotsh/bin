@@ -10,7 +10,7 @@ curl -T crash.log https://bin.rex.wf
 - **One link, two audiences.** Browsers see a viewer with line links, highlighting and terminal colours, and markdown formatted (one key away from the source). curl and agents get plain text with the line and token counts in headers.
 - **Read only what you need.** `?head=50`, `?tail=50`, `?lines=10-80`, `?grep=error&context=3`, and `?digest` for a log's errors, repeated warnings and tail with line numbers.
 - **`bin run -- bun test`** runs a command, then pastes its output with the command, exit code and duration.
-- **Edit in place** with the token you got when pasting: the pencil in the viewer, `bin edit <id>`, or `PUT /<id>` with `If-Match` so nobody's edit is lost.
+- **Edit single-file pastes in place** with the token you got when pasting: the pencil in the viewer, `bin edit <id>`, or `PUT /<id>` with `If-Match` so nobody's edit is lost.
 - **Multi-file pastes**, diffs (`/a/vs/b`), password pastes encrypted in your browser, Ctrl+V on the home page to paste instantly, keyboard shortcuts, dark and light themes.
 - **No accounts.** Anonymous pastes are fine; nothing pasted is ever rendered as HTML as written (in markdown, a small allowlist of tags such as `<details>`, `<img>` and `<p align=center>` is rebuilt with safe attributes; everything else is dropped).
 
