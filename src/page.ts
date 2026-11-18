@@ -17,6 +17,7 @@ export type View = {
   diff?: string;
   hl?: string[] | null;
   md?: boolean;
+  etag?: string;
 };
 
 export const assets = ASSETS as Record<string, string>;
@@ -49,7 +50,14 @@ export const escText = (s: string) => s.split("&").join("&amp;").split("<").join
 export const escRaw = (s: string) => escText(s).split("\r").join("&#13;");
 export const segments = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 export const safeJson = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-export const lineCount = (n: number) => `<span>${n.toLocaleString("en")} line${n === 1 ? "" : "s"}</span>`;
+export const lineCount = (n: number) => `<span class="ln">${n.toLocaleString("en")} line${n === 1 ? "" : "s"}</span>`;
+export function edited(at: number): string {
+  const s = Date.now() / 1000 - at;
+  const [n, unit] = s < 3600 ? [s / 60, "minute"] : s < 86400 ? [s / 3600, "hour"] : [s / 86400, "day"];
+  const k = Math.floor(n);
+  const ago = s < 60 ? "just now" : s < 30 * 86400 ? `${k} ${unit}${k === 1 ? "" : "s"} ago` : `on ${new Date(at * 1000).toISOString().slice(0, 10)}`;
+  return `<span class="ed">edited ${ago}</span>`;
+}
 export const gutter = (lines: number) => `${String(Math.max(lines, 1)).length + 1}ch`;
 
 export function fmtSize(n: number): string {
@@ -94,7 +102,8 @@ export function viewBody(v: View): { cls: string; html: string } {
   if (meta.dur) facts.push(`<span>${fmtDuration(Number(meta.dur))}</span>`);
   if (meta.lang && meta.lang !== "text") facts.push(`<span>${esc(meta.lang)}</span>`);
   if (!enc) facts.push(lineCount(lines));
-  facts.push(`<span>${fmtSize(Number(meta.bytes || 0))}</span>`);
+  facts.push(`<span class="sz">${fmtSize(Number(meta.bytes || 0))}</span>`);
+  if (meta.ed) facts.push(edited(Number(meta.ed)));
   if (enc) facts.push(`<span class="lock">encrypted</span>`);
   if (meta.exp) facts.push(`<span>expires ${new Date(Number(meta.exp) * 1000).toISOString().slice(0, 10)}</span>`);
   if (enc && v.text !== undefined) facts.push(lineCount(lines));
@@ -125,6 +134,7 @@ export function viewBody(v: View): { cls: string; html: string } {
     hl: v.hl,
     raw,
     dl,
+    etag: v.etag,
   };
   const shown = v.diff ? esc(v.diff.replace("/vs/", " vs ")) : `<b>${esc(id)}</b>${v.ext ? `.${esc(v.ext)}` : ""}`;
   const html = `<header class="top wrap"><a class="mark" href="/">bin</a><span class="crumb">/ ${shown}<span id="hash"></span></span><span class="sp"></span>
