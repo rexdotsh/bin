@@ -763,6 +763,7 @@ function pickLang(given: string | null, name: string, body: string): string {
   const shebang = head.match(/^\uFEFF?#!(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?(\w+)/);
   if (shebang) return Object.hasOwn(SHEBANG, shebang[1]) ? SHEBANG[shebang[1]] : "";
   if (head.includes("\x1b[")) return "log";
+  if (/^\uFEFF?\s*#{1,6} \S[^\n]*\n[\s\S]*?^(?:#{1,6} \S|```|~~~)/m.test(head)) return "markdown";
   return "";
 }
 
@@ -1060,6 +1061,8 @@ function viewer(
   body: string,
   extra: { files?: FileEntry[]; file?: string; diff?: string },
 ): Response {
+  const hint = ext?.toLowerCase();
+  if (!meta.lang && hint && Object.hasOwn(EXT_LANG, hint)) meta = { ...meta, lang: EXT_LANG[hint] };
   const enc = meta.enc === "1";
   const inline = Number(meta.bytes || body.length) <= INLINE_MAX;
   const ansi = inline && !enc && (meta.ansi === "1" || (extra.file !== undefined && body.includes("\x1b")));
