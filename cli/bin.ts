@@ -165,28 +165,27 @@ async function edit(args: string[]) {
   if (positionals.length !== 1) throw new Error("usage: bin edit <id|url>");
   const cfg = await loadConfig(o.url);
   const at = await editable(cfg, positionals[0]);
-  const res = await request(cfg, `${at.base}/raw/${at.id}${at.file ? `/${at.file}` : ""}`);
+  const res = await request(cfg, `${at.base}/raw/${at.id}`);
   if (!res.ok) throw new Error(`${res.status}: ${(await res.text()).trim().slice(0, 200)}`);
-  if (!at.file && res.headers.get("x-bin-files")) throw new Error(`that paste has several files; edit one: bin edit ${at.id}/<file>`);
+  if (res.headers.get("x-bin-files")) throw new Error("multi-file pastes can't be edited; edit as new");
   const password = res.headers.get("x-bin-encrypted") ? await readSecret("password: ", "BIN_PASSWORD") : "";
   const before = password ? decrypt(await res.text(), password) : await res.text();
   const name = decodeURIComponent(res.headers.get("x-bin-name") ?? "").split("/").pop()!.replace(/[^\w.-]/g, "_") || `${at.id}.txt`;
   const dir = await mkdtemp(path.join(tmpdir(), "bin-"));
   const file = path.join(dir, name);
-  await writeFile(file, before, { mode: 0o600 });
   let keep = false;
   try {
+    await writeFile(file, before, { mode: 0o600 });
     const editor = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "vi");
     const code = await new Promise((resolve) => {
       const child = spawn(`${editor} "${file}"`, { shell: true, stdio: "inherit" });
       child.on("error", () => resolve(-1));
       child.on("close", resolve);
     });
+    keep = !(await readFile(file)).equals(Buffer.from(before));
     if (code !== 0) throw new Error(`${editor} exited with ${code}; nothing uploaded`);
-    const after = await readTextFile(file);
-    if (after === before) return void process.stderr.write("bin: no changes\n");
-    keep = true;
-    await replace(cfg, at, after, o, password, res.headers.get("etag") ?? "*");
+    if (!keep) return void process.stderr.write("bin: no changes\n");
+    await replace(cfg, at, await readTextFile(file), o, password, res.headers.get("etag") ?? "*");
     keep = false;
   } catch (err) {
     throw keep ? new Error(`${err instanceof Error ? err.message : err}\nyour edit is still in ${file}`) : err;
@@ -205,26 +204,26 @@ async function put(args: string[]) {
   await replace(cfg, at, text, o, o.password ? await readSecret("password: ", "BIN_PASSWORD") : "", o["if-match"] ?? "*");
 }
 
-type Target = { base: string; id: string; file: string; token?: string };
+type Target = { base: string; id: string; token?: string };
 
 async function editable(cfg: Config, ref: string): Promise<Target> {
-  const { base, id, file } = locate(cfg, ref);
+  const { base, id } = locate(cfg, ref);
   const { token } = await savedToken(base, id);
   if (!token && !cfg.token) throw new Error("no edit token for that paste on this machine (and no owner token)");
-  return { base, id, file, token };
+  return { base, id, token };
 }
 
 type PutFlags = { json?: boolean; title?: string; lang?: string; name?: string; redact?: boolean; "allow-secrets"?: boolean };
 
 async function replace(cfg: Config, at: Target, text: string, o: PutFlags, password: string, etag: string) {
-  const files: [string, string][] = [[at.file, text]];
+  const files: [string, string][] = [["", text]];
   if (!password) guard(files, o);
   const params = new URLSearchParams();
   for (const k of ["title", "lang", "name"] as const) if (o[k] !== undefined) params.set(k, o[k]);
   if (password) params.set("enc", "1");
   const headers: Record<string, string> = { "content-type": "text/plain; charset=utf-8", "if-match": etag };
   if (at.token) headers["x-delete"] = at.token;
-  const target = `${at.base}/${at.id}${at.file ? `/${at.file}` : ""}${params.size ? `?${params}` : ""}`;
+  const target = `${at.base}/${at.id}${params.size ? `?${params}` : ""}`;
   const r = await api<Receipt>(cfg, target, { method: "PUT", body: password ? encrypt(files[0][1], password) : files[0][1], headers });
   if (o.json) return printJson(r);
   console.log(r.url);
