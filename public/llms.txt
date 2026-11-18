@@ -22,8 +22,15 @@ Read
   GET /<a>/vs/<b>                    a unified diff of two pastes, like diff -u
   Response headers: x-bin-lines, x-bin-tokens (rough), x-bin-lang, x-bin-exit, x-bin-duration-ms,
   x-bin-range (for slices), x-bin-encrypted, x-bin-hint (big pastes); x-bin-title, x-bin-name and
-  x-bin-command are URL-encoded. HEAD gives the headers without the body.
+  x-bin-command are URL-encoded, x-bin-edited, and an ETag. HEAD gives the headers without the body.
   For big pastes (over ~10k tokens), read ?digest or a slice before the whole thing.
+
+Edit
+  Pastes can change: whoever holds the delete token can replace the text. x-bin-edited says when it last did.
+  curl -T new.txt https://bin.rex.wf/<id> -H 'x-delete: <token>' -H 'If-Match: <ETag from your read>'
+  A stale If-Match gets 412; If-Match: * (or no If-Match, with x-delete) overwrites whatever is there.
+  ?title= ?lang= ?name= change those. Encrypted pastes need a new envelope (bin put --password).
+  Multi-file pastes can't be edited.
 
 Delete
   curl -X DELETE https://bin.rex.wf/<id> -H 'x-delete: <token from the receipt>'
@@ -32,5 +39,6 @@ CLI (Node 20+): curl -fsSL https://bin.rex.wf/install | sh
   bin file.ts          bin a.ts b.ts          cmd | bin
   bin run -- bun test  runs the command, then pastes its output with the exit code; exits with its code
   bin get <id> [--digest | --grep <text> | --tail 50]
+  bin edit <id>        edit in $EDITOR          bin put <id> file.txt   replace the text
 
 Limits: 2 MB per anonymous paste (10 files), 5 MB with the owner token, about 20 pastes a minute. Text only; nothing is ever rendered as HTML.

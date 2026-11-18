@@ -1,4 +1,4 @@
-import { asset, hlModules, viewBody } from "../src/page";
+import { asset, hlModules, INLINE_MAX, viewBody } from "../src/page";
 import { encrypt } from "./crypto";
 import { stripAnsi, toLines } from "../src/text";
 import "./theme";
@@ -14,6 +14,7 @@ type Receipt = {
   bytes?: number;
   lang?: string | null;
   expires?: string | null;
+  etag?: string;
 };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -183,15 +184,17 @@ async function show(r: Receipt, text: string, enc: boolean, copied: Promise<unkn
     document.head.append(css);
     md = await ready;
   }
+  const plain = stripAnsi(text);
   const { cls, html } = viewBody({
     id: r.id!,
     ext: path.split(".")[1] ?? "",
     host: location.host,
     wrap: cookie("wrap") === "1",
     meta,
-    text: stripAnsi(text),
+    text: plain,
     ansi: text.includes("\x1b") ? text : undefined,
     md: md ? cookie("md") !== "0" : undefined,
+    etag: !enc && plain === text && Number(meta.bytes) <= INLINE_MAX ? r.etag : undefined,
   });
   listening.abort();
   t.remove();

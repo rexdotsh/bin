@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm as removeFile, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm as removeFile, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
-import { constants as osConstants, homedir } from "node:os";
+import { constants as osConstants, homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parseArgs } from "node:util";
@@ -18,16 +18,9 @@ const MAX_BYTES = 5 * 1024 * 1024;
 const ITER = 600_000;
 const isLocal = (host: string) => ["localhost", "127.0.0.1", "[::1]"].includes(host) || host.endsWith(".localhost");
 const common = { url: { type: "string" }, json: { type: "boolean" } } as const;
-const pasteOpts = {
-  ...common,
-  title: { type: "string" },
-  lang: { type: "string" },
-  ttl: { type: "string" },
-  name: { type: "string" },
-  password: { type: "boolean" },
-  redact: { type: "boolean" },
-  "allow-secrets": { type: "boolean" },
-} as const;
+const secretOpts = { redact: { type: "boolean" }, "allow-secrets": { type: "boolean" } } as const;
+const putOpts = { ...common, ...secretOpts, title: { type: "string" }, lang: { type: "string" }, name: { type: "string" }, password: { type: "boolean" } } as const;
+const pasteOpts = { ...putOpts, ttl: { type: "string" } } as const;
 
 const HELP = `bin - paste text to your bin and get a link
 
@@ -36,6 +29,8 @@ Usage:
   cmd | bin                         paste stdin
   bin run [opts] -- <cmd> [args]    run a command, paste its output with the exit code, exit with its code
   bin get <id|url> [--digest | --grep <text> [--context n] | --head n | --tail n | --lines a-b | --raw] [--password]
+  bin edit <id|url>                 edit a paste in $VISUAL/$EDITOR (one you made from this machine, or any with the owner token)
+  bin put <id|url> [file]           replace a paste's text with a file or stdin [--if-match <etag>] [--title, --lang, --name, --password]
   bin rm <id|url>                   delete a paste (one you made from this machine, or any with the owner token)
   bin update                        update this CLI (and the skill) from your bin
   bin setup [--token|--rotate]      owner only: save + set the owner token (--token: paste an existing one)
@@ -87,7 +82,7 @@ process.stdout.on("error", (err: NodeJS.ErrnoException) => {
   throw err;
 });
 
-const commands: Record<string, (argv: string[]) => Promise<void>> = { run, get, rm, update, setup };
+const commands: Record<string, (argv: string[]) => Promise<void>> = { run, get, edit, put, rm, update, setup };
 const argv = process.argv.slice(2);
 const first = argv[0];
 
@@ -120,16 +115,7 @@ async function paste(args: string[]) {
   if (!total) throw new Error("that's empty");
   if (total > MAX_BYTES) throw new Error("over the 5 MB limit");
 
-  if (!o.password) {
-    const found = files.flatMap(([n, t]) => findSecrets(t.includes("\x1b") ? t.replace(ANSI, "") : t).map((f) => ({ ...f, file: n })));
-    if (found.length && o.redact) {
-      for (const f of files) f[1] = makeRedactor()(f[1]);
-      process.stderr.write(`bin: masked ${found.length} secret${found.length === 1 ? "" : "s"}\n`);
-    } else if (found.length && !o["allow-secrets"]) {
-      const lines = found.slice(0, 8).map((f) => `  ${f.file ? `${f.file}:` : "line "}${f.line}  ${f.kind}: ${f.preview}`);
-      throw new Error(`this looks like it contains secrets:\n${lines.join("\n")}\nrefusing. Use --redact to mask them, --password to encrypt, or --allow-secrets`);
-    }
-  }
+  if (!o.password) guard(files, o);
 
   const params = new URLSearchParams();
   if (o.title) params.set("title", o.title);
@@ -158,6 +144,89 @@ async function paste(args: string[]) {
   if (o.json) return printJson(r);
   const copied = process.stdout.isTTY && (await copy(r.url));
   console.log(`${r.url}${copied ? "  (copied)" : ""}`);
+  for (const w of r.warnings ?? []) process.stderr.write(`bin: warning: ${w}\n`);
+}
+
+function guard(files: [string, string][], o: { redact?: boolean; "allow-secrets"?: boolean }) {
+  const found = files.flatMap(([n, t]) => findSecrets(t.includes("\x1b") ? t.replace(ANSI, "") : t).map((f) => ({ ...f, file: n })));
+  if (found.length && o.redact) {
+    for (const f of files) f[1] = makeRedactor()(f[1]);
+    process.stderr.write(`bin: masked ${found.length} secret${found.length === 1 ? "" : "s"}\n`);
+  } else if (found.length && !o["allow-secrets"]) {
+    const lines = found.slice(0, 8).map((f) => `  ${f.file ? `${f.file}:` : "line "}${f.line}  ${f.kind}: ${f.preview}`);
+    throw new Error(`this looks like it contains secrets:\n${lines.join("\n")}\nrefusing. Use --redact to mask them, --password to encrypt, or --allow-secrets`);
+  }
+}
+
+// ---------------------------------------------------------------- edit / put
+
+async function edit(args: string[]) {
+  const { values: o, positionals } = parseArgs({ args, allowPositionals: true, options: { ...common, ...secretOpts } });
+  if (positionals.length !== 1) throw new Error("usage: bin edit <id|url>");
+  const cfg = await loadConfig(o.url);
+  const at = await editable(cfg, positionals[0]);
+  const res = await request(cfg, `${at.base}/raw/${at.id}`);
+  if (!res.ok) throw new Error(`${res.status}: ${(await res.text()).trim().slice(0, 200)}`);
+  if (res.headers.get("x-bin-files")) throw new Error("multi-file pastes can't be edited; edit as new");
+  const password = res.headers.get("x-bin-encrypted") ? await readSecret("password: ", "BIN_PASSWORD") : "";
+  const before = password ? decrypt(await res.text(), password) : await res.text();
+  const name = decodeURIComponent(res.headers.get("x-bin-name") ?? "").split("/").pop()!.replace(/[^\w.-]/g, "_") || `${at.id}.txt`;
+  const dir = await mkdtemp(path.join(tmpdir(), "bin-"));
+  const file = path.join(dir, name);
+  let keep = false;
+  try {
+    await writeFile(file, before, { mode: 0o600 });
+    const editor = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "vi");
+    const code = await new Promise((resolve) => {
+      const child = spawn(`${editor} "${file}"`, { shell: true, stdio: "inherit" });
+      child.on("error", () => resolve(-1));
+      child.on("close", resolve);
+    });
+    keep = !(await readFile(file)).equals(Buffer.from(before));
+    if (code !== 0) throw new Error(`${editor} exited with ${code}; nothing uploaded`);
+    if (!keep) return void process.stderr.write("bin: no changes\n");
+    await replace(cfg, at, await readTextFile(file), o, password, res.headers.get("etag") ?? "*");
+    keep = false;
+  } catch (err) {
+    throw keep ? new Error(`${err instanceof Error ? err.message : err}\nyour edit is still in ${file}`) : err;
+  } finally {
+    if (!keep) await removeFile(dir, { recursive: true, force: true });
+  }
+}
+
+async function put(args: string[]) {
+  const { values: o, positionals } = parseArgs({ args, allowPositionals: true, options: { ...putOpts, "if-match": { type: "string" } } });
+  if (positionals.length < 1 || positionals.length > 2) throw new Error("usage: bin put <id|url> [file]  (or pipe the new text in)");
+  const cfg = await loadConfig(o.url);
+  const at = await editable(cfg, positionals[0]);
+  if (!positionals[1] && process.stdin.isTTY) throw new Error("nothing to put: give a file, or pipe something in");
+  const text = positionals[1] ? await readTextFile(positionals[1]) : await readStdin();
+  await replace(cfg, at, text, o, o.password ? await readSecret("password: ", "BIN_PASSWORD") : "", o["if-match"] ?? "*");
+}
+
+type Target = { base: string; id: string; token?: string };
+
+async function editable(cfg: Config, ref: string): Promise<Target> {
+  const { base, id } = locate(cfg, ref);
+  const { token } = await savedToken(base, id);
+  if (!token && !cfg.token) throw new Error("no edit token for that paste on this machine (and no owner token)");
+  return { base, id, token };
+}
+
+type PutFlags = { json?: boolean; title?: string; lang?: string; name?: string; redact?: boolean; "allow-secrets"?: boolean };
+
+async function replace(cfg: Config, at: Target, text: string, o: PutFlags, password: string, etag: string) {
+  const files: [string, string][] = [["", text]];
+  if (!password) guard(files, o);
+  const params = new URLSearchParams();
+  for (const k of ["title", "lang", "name"] as const) if (o[k] !== undefined) params.set(k, o[k]);
+  if (password) params.set("enc", "1");
+  const headers: Record<string, string> = { "content-type": "text/plain; charset=utf-8", "if-match": etag };
+  if (at.token) headers["x-delete"] = at.token;
+  const target = `${at.base}/${at.id}${params.size ? `?${params}` : ""}`;
+  const r = await api<Receipt>(cfg, target, { method: "PUT", body: password ? encrypt(files[0][1], password) : files[0][1], headers });
+  if (o.json) return printJson(r);
+  console.log(r.url);
   for (const w of r.warnings ?? []) process.stderr.write(`bin: warning: ${w}\n`);
 }
 
@@ -338,9 +407,7 @@ async function rm(args: string[]) {
   const cfg = await loadConfig(o.url);
   const { base, id } = locate(cfg, positionals[0]);
   const file = tokenFile(base, id);
-  const legacy = ((await readJson(DELETES_FILE)) ?? {}) as Record<string, string>;
-  const key = `${new URL(base).origin}/${id}`;
-  const saved = (await readText(file))?.trim() || legacy[key];
+  const { legacy, key, token: saved } = await savedToken(base, id);
   const headers: Record<string, string> = {};
   if (saved) headers["x-delete"] = saved;
   else if (!cfg.token) throw new Error("no delete token for that paste on this machine (and no owner token)");
@@ -367,6 +434,12 @@ function locate(cfg: Config, ref: string): { base: string; id: string; file: str
   const id = idPart.match(/^([A-Za-z0-9+-]{6})(?:\.\w+)?$/)?.[1];
   if (!id) throw new Error(`not a paste id: ${ref}`);
   return { base: cfg.url, id, file: rest.map(encodeURIComponent).join("/"), query: "" };
+}
+
+async function savedToken(base: string, id: string) {
+  const legacy = ((await readJson(DELETES_FILE)) ?? {}) as Record<string, string>;
+  const key = `${new URL(base).origin}/${id}`;
+  return { legacy, key, token: (await readText(tokenFile(base, id)))?.trim() || legacy[key] };
 }
 
 const tokenFile = (origin: string, id: string) => path.join(DELETES_DIR, `${new URL(origin).host.replace(/[^\w.-]/g, "_")}_${id.replace(/\+/g, "%2B")}`);

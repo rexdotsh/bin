@@ -45,7 +45,7 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 .acts { display: flex; gap: 2px; position: relative; flex: none; }
 .ib { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--mute2); background: none; border: 0; cursor: pointer; flex: none; }
 .ib:active { background: var(--soft); color: var(--fg); }
-#del { position: absolute; right: 100%; margin-right: 2px; background: var(--bg); }
+#del, #edit { position: absolute; right: 100%; margin-right: 2px; background: var(--bg); }
 @media (hover: hover) {
   .ib:hover { background: var(--soft); color: var(--fg); }
   #del:hover { background: var(--soft); color: var(--red); }
@@ -170,7 +170,7 @@ kbd { font: 11px var(--mono); color: var(--mute2); background: var(--soft); bord
   :root { --ib: 44px; --ctl: 44px; }
   .ib { width: 44px; height: 44px; border-radius: 10px; }
   .acts { gap: 0; margin-right: -14px; }
-  #del { margin-right: 0; }
+  #del, #edit { margin-right: 0; }
   .compose .top .ib { margin-right: -14px; }
   .field, .bar select, .lockbtn, .pw, .btn { height: 44px; font-size: 16px; border-radius: 10px; }
   .field { padding: 0 12px; }
@@ -221,6 +221,8 @@ kbd { font: 11px var(--mono); color: var(--mute2); background: var(--soft); bord
 @media (pointer: coarse) and (max-height: 500px) {
   .compose textarea { min-height: 30vh; padding-top: 20px; }
 }
+
+@media (max-width: 400px) and (pointer: coarse) { #dl { display: none; } }
 
 @media (max-width: 640px) and (pointer: coarse) {
   .acts .ib { width: 40px; }

@@ -61,4 +61,4 @@
 .md img[width] { height: auto; }
 @media (max-width: 640px) { .md { font-size: 16px; line-height: 1.65; } }
 @media (max-width: 640px) and (pointer: coarse) { .mdp #dl { display: none; } }
-@media (max-width: 380px) and (pointer: coarse) { .mdp #raw { display: none; } }
+@media (max-width: 400px) and (pointer: coarse) { .mdp #raw { display: none; } }

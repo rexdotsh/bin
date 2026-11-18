@@ -17,6 +17,7 @@ export type View = {
   diff?: string;
   hl?: string[] | null;
   md?: boolean;
+  etag?: string;
 };
 
 export const assets = ASSETS as Record<string, string>;
@@ -49,13 +50,20 @@ export const escText = (s: string) => s.split("&").join("&amp;").split("<").join
 export const escRaw = (s: string) => escText(s).split("\r").join("&#13;");
 export const segments = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 export const safeJson = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-export const lineCount = (n: number) => `<span>${n.toLocaleString("en")} line${n === 1 ? "" : "s"}</span>`;
+export const lineCount = (n: number) => `<span class="ln">${n.toLocaleString("en")} line${n === 1 ? "" : "s"}</span>`;
 export const gutter = (lines: number) => `${String(Math.max(lines, 1)).length + 1}ch`;
 
 export function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1048576) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
   return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+function ago(at: number): string {
+  const s = Date.now() / 1000 - at;
+  const [n, unit] = s < 3600 ? [s / 60, "minute"] : s < 86400 ? [s / 3600, "hour"] : [s / 86400, "day"];
+  const k = Math.floor(n);
+  return s < 60 ? "just now" : s < 30 * 86400 ? `${k} ${unit}${k === 1 ? "" : "s"} ago` : `on ${new Date(at * 1000).toISOString().slice(0, 10)}`;
 }
 
 function fmtDuration(ms: number): string {
@@ -72,6 +80,7 @@ export const LOCK_ICON = svg('<rect x="5" y="11" width="14" height="9" rx="2"/><
 function icons(raw: string | null, dl: string | null, md?: boolean): string {
   return [
     md === undefined ? "" : `<button id="mdv" class="ib" title="${md ? "Source" : "Formatted"} (m)">${svg('<path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/>')}</button>`,
+    `<button id="edit" class="ib" title="Edit (e)" hidden>${svg('<path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4"/>')}</button>`,
     `<button id="del" class="ib" title="Delete" hidden>${svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>')}</button>`,
     `<button id="copy" class="ib" title="Copy (y)">${svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>')}</button>`,
     raw ? `<a id="raw" class="ib" href="${raw}" title="Raw (r)">${svg('<path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>')}</a>` : "",
@@ -81,7 +90,7 @@ function icons(raw: string | null, dl: string | null, md?: boolean): string {
   ].join("");
 }
 
-const KEYS = [["y", "copy"], ["r", "raw"], ["/", "find"], ["g", "line"], ["w", "wrap"], ["e", "edit as new"], ["t", "theme"]];
+const KEYS = [["y", "copy"], ["r", "raw"], ["/", "find"], ["g", "line"], ["w", "wrap"], ["E", "edit as new"], ["t", "theme"]];
 
 export function viewBody(v: View): { cls: string; html: string } {
   const { meta, id } = v;
@@ -95,6 +104,7 @@ export function viewBody(v: View): { cls: string; html: string } {
   if (meta.lang && meta.lang !== "text") facts.push(`<span>${esc(meta.lang)}</span>`);
   if (!enc) facts.push(lineCount(lines));
   facts.push(`<span>${fmtSize(Number(meta.bytes || 0))}</span>`);
+  if (meta.ed) facts.push(`<span>edited ${ago(Number(meta.ed))}</span>`);
   if (enc) facts.push(`<span class="lock">encrypted</span>`);
   if (meta.exp) facts.push(`<span>expires ${new Date(Number(meta.exp) * 1000).toISOString().slice(0, 10)}</span>`);
   if (enc && v.text !== undefined) facts.push(lineCount(lines));
@@ -125,6 +135,7 @@ export function viewBody(v: View): { cls: string; html: string } {
     hl: v.hl,
     raw,
     dl,
+    etag: v.etag,
   };
   const shown = v.diff ? esc(v.diff.replace("/vs/", " vs ")) : `<b>${esc(id)}</b>${v.ext ? `.${esc(v.ext)}` : ""}`;
   const html = `<header class="top wrap"><a class="mark" href="/">bin</a><span class="crumb">/ ${shown}<span id="hash"></span></span><span class="sp"></span>

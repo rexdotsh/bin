@@ -18,10 +18,16 @@ type Data = {
   hl?: string[] | null;
   raw: string | null;
   dl: string | null;
+  etag?: string;
 };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const data = JSON.parse($("data").textContent!) as Data;
+const saved = history.state?.etag;
+if (saved && saved !== data.etag) {
+  history.replaceState(0, "");
+  location.reload();
+}
 const pre = $<HTMLPreElement>("text");
 const BLOCK = 256;
 const CV_MIN = 1000;
@@ -282,13 +288,13 @@ async function fill() {
 }
 
 async function render(raw: string) {
+  hlRows = null;
   ({ raw: lines, plain, eol } = toLines(raw));
   ansi = raw.includes("\x1b");
   count = lines.length;
   ready = true;
   if (MD) {
     source = raw;
-    if (built) return;
     if (fmt()) return void (/^#L\d/.test(location.hash) ? show(false) : formatted(history.state?.md));
     built = true;
   }
@@ -448,9 +454,10 @@ $("copy").addEventListener("click", copy);
 
 const delKey = `bin:del:${data.id}`;
 const delToken = stored("localStorage", delKey);
+const canEdit = delToken && data.etag;
 if (delToken && !data.diff) {
   const del = $<HTMLButtonElement>("del");
-  del.hidden = false;
+  $(canEdit ? "edit" : "del").hidden = false;
   del.addEventListener("click", async () => {
     if (!confirm("Delete this paste for everyone?")) return;
     const res = await fetch(`/${data.id}`, { method: "DELETE", headers: { "x-delete": delToken } });
@@ -460,6 +467,16 @@ if (delToken && !data.diff) {
     } else toast("couldn't delete");
   });
 }
+
+async function edit() {
+  if (!loaded()) return;
+  const was = MD && fmt();
+  if (MD && was) await show(false);
+  const m: typeof import("./edit") = await import(asset("edit.js"));
+  m.open(pre, textOf(1, count), data, delToken!, MD ? (text) => ((md = null), render(text)) : render, MD && was && (() => show(true)));
+}
+
+$("edit").onclick = edit;
 
 const findBox = $<HTMLDivElement>("find");
 const q = $<HTMLInputElement>("q");
@@ -540,7 +557,8 @@ document.addEventListener("keydown", (e) => {
     t: toggleTheme,
     "/": () => openBox("find"),
     g: () => openBox("line"),
-    e: () => {
+    e: () => (canEdit ? edit() : actions.E()),
+    E: () => {
       if (!loaded()) return;
       if (store("sessionStorage", "bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }))) location.href = "/";
       else toast("couldn't open this in the editor");

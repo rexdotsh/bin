@@ -77,7 +77,8 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
     const usage = await env.ASSETS.fetch(new Request(new URL("/llms.txt", url)));
     return new Response(usage.body, { headers: { "content-type": "text/plain; charset=utf-8" } });
   }
-  if (m === "PUT" && parts.length === 1) return create(req, env, url, parts[0]);
+  const editing = req.headers.has("x-delete") || req.headers.has("if-match");
+  if (m === "PUT" && parts.length === 1 && !editing) return create(req, env, url, parts[0]);
 
   const [first, ...rest] = parts;
   if (first === "a" || first === "fonts") {
@@ -96,6 +97,7 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
   const [, id, ext] = idx;
   const sub = rest.join("/");
   if (m === "DELETE" && !sub) return remove(req, env, id);
+  if (m === "PUT") return edit(req, env, url, id, sub);
   if (m !== "GET" && m !== "HEAD") return fail(405, "method not allowed");
   if (rest[0] === "vs" && rest.length === 2) {
     const other = rest[1].match(IDX_RE);
@@ -106,7 +108,7 @@ async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): P
 
 // ---------------------------------------------------------------- create
 
-async function create(req: Request, env: Env, url: URL, pathName?: string): Promise<Response> {
+async function create(req: Request, env: Env, url: URL, pathName?: string, editing?: { id: string; head: R2Object }): Promise<Response> {
   const owner = await isOwner(req, env);
   const ip = rateKey(req.headers.get("cf-connecting-ip") ?? "local");
   if (!owner && !(await env.ANON.limit({ key: ip })).success) return slowDown();
@@ -115,7 +117,8 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
   const limit = `${max / 1048576} MB`;
   const tooBig = () => fail(413, `pastes are limited to ${limit}`);
 
-  const meta: Meta = { at: new Date().toISOString() };
+  const meta: Meta = editing ? { ...editing.head.customMetadata, ed: String(Math.floor(Date.now() / 1000)) } : { at: new Date().toISOString() };
+  for (const k of ["ansi", "cr", "lines", "tok"]) delete meta[k];
   const title = clean(q.get("title"), 200);
   if (title) meta.t = title;
   const cmd = clean(q.get("cmd"), 400);
@@ -129,10 +132,11 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
     if (!Object.hasOwn(TTL, ttl)) return fail(400, "ttl must be 1h, 1d, 7d, 30d or never");
     meta.exp = String(Math.floor(Date.now() / 1000) + TTL[ttl]);
   }
-  const id = q.get("id");
-  if (id !== null && (!owner || !ID_RE.test(id))) return fail(400, "only the owner can choose an id, and it must be 6 characters");
+  const id = editing?.id ?? q.get("id");
+  if (id !== null && !editing && (!owner || !ID_RE.test(id))) return fail(400, "only the owner can choose an id, and it must be 6 characters");
 
-  const anonDelete = owner ? null : token();
+  const anonDelete = owner || editing ? null : token();
+  const status = editing ? 200 : 201;
   if (anonDelete) meta.del = await sha256(anonDelete);
   const receipt = (pid: string, ext: string, extra: Record<string, unknown>) => {
     const link = `${url.origin}/${pid}${ext ? `.${ext}` : ""}`;
@@ -145,12 +149,12 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
       ...(anonDelete && { delete: anonDelete }),
       ...extra,
     };
-    if (q.has("json") || (req.headers.get("accept") ?? "").includes("application/json")) return json(body, 201);
+    if (q.has("json") || (req.headers.get("accept") ?? "").includes("application/json")) return json(body, status);
     const notes = [
       ...(anonDelete ? [`# delete: curl -X DELETE ${url.origin}/${pid} -H 'x-delete: ${anonDelete}'`] : []),
       ...((extra.warnings as string[] | undefined) ?? []).map((w) => `# warning: ${w}`),
     ];
-    return text(`${link}\n${notes.map((n) => `${n}\n`).join("")}`, 201);
+    return text(`${link}\n${notes.map((n) => `${n}\n`).join("")}`, status);
   };
 
   const exit = q.get("exit");
@@ -166,6 +170,7 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
 
   const type = req.headers.get("content-type") ?? "";
   const multipart = type.startsWith("multipart/form-data");
+  if (multipart && editing) return multiEdit();
   const raw = await readBounded(req, multipart ? max + 65536 : max);
   if (!raw) return tooBig();
   const budget = async (writes: number, perIp = 0) => {
@@ -248,10 +253,11 @@ async function create(req: Request, env: Env, url: URL, pathName?: string): Prom
   if (!(await budget(1))) return busy();
   const body = decodeText(raw);
   if (body === null) return fail(415, "that isn't text; bin only takes text");
-  const givenName = q.get("name") ?? pathName ?? "";
+  const givenName = q.get("name") ?? pathName ?? meta.name ?? "";
   const name = cleanName(givenName);
   if (givenName && !name) return fail(400, `bad file name: ${givenName}`);
-  return single(env, url, id, meta, raw, body, name, q, receipt);
+  const at = editing?.head.uploaded.getTime() ?? 0;
+  return single(env, url, id, meta, raw, body, name, q, receipt, at ? { uploadedAfter: new Date(at - 1), uploadedBefore: new Date(at + 1) } : undefined);
 }
 
 async function single(
@@ -264,21 +270,23 @@ async function single(
   name: string,
   q: URLSearchParams,
   receipt: (id: string, ext: string, extra: Record<string, unknown>) => Response,
+  onlyIf?: R2Conditional,
 ): Promise<Response> {
   if (name) meta.name = name;
+  const lang = q.get("lang") ?? (q.has("name") ? null : (meta.lang ?? null));
   let warnings: string[] = [];
-  if (q.get("enc") === "1") {
-    if (!isEnvelope(body)) return fail(400, "enc=1 needs an encrypted envelope (the CLI and web form make these)");
+  if (q.get("enc") === "1" || meta.enc) {
+    if (!isEnvelope(body)) return fail(400, "encrypted pastes need an encrypted envelope (the CLI and web form make these)");
     meta.enc = "1";
     meta.bytes = String(bytes.byteLength);
-    meta.lang = pickLang(q.get("lang"), name, "");
+    meta.lang = pickLang(lang, name, "");
   } else {
     Object.assign(meta, statsOf(bytes, body));
-    meta.lang = pickLang(q.get("lang"), name, body);
+    meta.lang = pickLang(lang, name, body);
     warnings = scanSecrets(body);
   }
-  const placed = await claim(env, id, bytes, meta);
-  if (!placed) return fail(409, "that id is taken");
+  const placed = await claim(env, id, bytes, meta, onlyIf);
+  if (!placed) return onlyIf ? changed() : fail(409, "that id is taken");
   const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
   return receipt(placed.id, /^[a-z0-9]{1,12}$/.test(ext) ? ext : "", {
     lines: meta.lines ? Number(meta.lines) : undefined,
@@ -287,22 +295,38 @@ async function single(
     lang: meta.lang || null,
     encrypted: meta.enc === "1",
     warnings,
+    etag: placed.etag,
   });
 }
 
-async function claim(env: Env, wanted: string | null, body: string | Uint8Array, meta: Meta): Promise<{ id: string; etag: string } | null> {
+async function claim(env: Env, wanted: string | null, body: string | Uint8Array, meta: Meta, onlyIf?: R2Conditional): Promise<{ id: string; etag: string } | null> {
   for (let attempt = 0; attempt < 6; attempt++) {
     const id = wanted ?? makeId();
     const obj = await env.BUCKET.put(`p/${id}`, body, {
       customMetadata: meta,
       httpMetadata: { contentType: "text/plain; charset=utf-8" },
-      onlyIf: new Headers({ "if-none-match": "*" }),
+      onlyIf: onlyIf ?? new Headers({ "if-none-match": "*" }),
     });
-    if (obj) return { id, etag: obj.etag };
+    if (obj) return { id, etag: revision(obj) };
     if (wanted) return null;
   }
   throw new Error("could not find a free id");
 }
+
+async function edit(req: Request, env: Env, url: URL, id: string, file: string): Promise<Response> {
+  const head = file ? null : await env.BUCKET.head(`p/${id}`);
+  const meta = head?.customMetadata ?? {};
+  if (file || meta.kind) return multiEdit();
+  if (!head || (meta.exp && Number(meta.exp) * 1000 < Date.now())) return fail(404, "no such paste");
+  if (!(await isOwner(req, env)) && !(await holds(req, meta))) return fail(403, "needs the paste's delete token (x-delete) or the owner token");
+  const tags = req.headers.get("if-match")?.split(",").map((t) => t.trim());
+  if (tags && !tags.some((t) => t === "*" || t === revision(head))) return changed();
+  return create(req, env, url, undefined, { id, head });
+}
+
+const revision = (o: R2Object) => `"${o.etag}.${o.uploaded.getTime()}"`;
+const changed = () => fail(412, "this paste changed since you opened it");
+const multiEdit = () => fail(400, "multi-file pastes can't be edited; edit as new");
 
 async function readBounded(req: Request, max: number): Promise<Uint8Array | null> {
   const declared = req.headers.get("content-length");
@@ -362,7 +386,7 @@ async function read(...args: Parameters<typeof readPaste>): Promise<Response> {
   const res = await readPaste(...args);
   const maxAge = Number(res.headers.get("x-max-age") ?? 0);
   res.headers.delete("x-max-age");
-  if (res.status === 200 && maxAge > 0) res.headers.set("cache-control", `private, max-age=${maxAge}, no-transform`);
+  if (res.status === 200 && maxAge > 0 && !res.headers.get("content-type")?.startsWith("text/html")) res.headers.set("cache-control", `private, max-age=${maxAge}, no-transform`);
   return res;
 }
 
@@ -383,6 +407,7 @@ async function readPaste(
     if (meta.kind !== "multi") {
       const headers = agentHeaders(meta);
       headers.set("content-type", "text/plain; charset=utf-8");
+      headers.set("etag", revision(head));
       return new Response(null, { headers });
     }
   }
@@ -399,6 +424,7 @@ async function readPaste(
   const left = meta.exp ? Number(meta.exp) - Math.floor(Date.now() / 1000) : Infinity;
   const res = await readBody(req, env, url, id, ext, file, mode, obj, meta, early);
   if (res.status === 200 && left > 0) res.headers.set("x-max-age", String(Math.min(300, left)));
+  if (res.status === 200 && !meta.kind && res.headers.get("content-type")?.startsWith("text/plain")) res.headers.set("etag", revision(obj));
   return res;
 }
 
@@ -436,7 +462,7 @@ async function readBody(
 
   if (mode !== "view") return rawResponse(obj.body, meta, id, mode);
   if (streamable(req, url, meta)) return agentStream(obj.body, meta);
-  return present(req, url, id, ext, meta, await viewText(req, url, meta, obj));
+  return present(req, url, id, ext, meta, await viewText(req, url, meta, obj), { etag: revision(obj) });
 }
 
 async function viewText(req: Request, url: URL, meta: Meta, obj: R2ObjectBody): Promise<string> {
@@ -476,14 +502,13 @@ function present(
   ext: string | undefined,
   meta: Meta,
   body: string,
-  extra: { files?: FileEntry[]; file?: string; diff?: string } = {},
+  extra: { files?: FileEntry[]; file?: string; diff?: string; etag?: string } = {},
 ): Response {
   const q = url.searchParams;
   const sliced = slicing(url);
   if (!sliced && wantsHtml(req)) return viewer(req, url, id, ext, meta, body, extra);
   const headers = agentHeaders(meta);
   if (meta.enc === "1") {
-    headers.set("x-bin-encrypted", "1");
     if (sliced) return fail(400, "this paste is encrypted; read it with `bin get <url> --password`");
     return text(`This paste is encrypted. Read it with: bin get ${url.origin}/${id} --password\n\n${body}\n`, 200, headers);
   }
@@ -529,6 +554,8 @@ function agentHeaders(meta: Meta): Headers {
   set("exit", meta.exit);
   set("duration-ms", meta.dur);
   set("expires", meta.exp && new Date(Number(meta.exp) * 1000).toISOString());
+  set("edited", meta.ed && new Date(Number(meta.ed) * 1000).toISOString());
+  set("encrypted", meta.enc);
   const tokens = Number(meta.tok) || 0;
   if (tokens > 10_000) set("hint", `large paste (~${tokens} tokens): try ?digest, ?head=200, ?tail=200 or ?grep=<text>&context=3`);
   return h;
@@ -684,9 +711,7 @@ async function remove(req: Request, env: Env, id: string): Promise<Response> {
   const head = await env.BUCKET.head(`p/${id}`);
   if (!head) return fail(404, "no such paste");
   const meta = head.customMetadata ?? {};
-  const given = req.headers.get("x-delete");
-  const allowed = (await isOwner(req, env)) || (Boolean(given && meta.del) && (await same(await sha256(given!), meta.del)));
-  if (!allowed) return fail(403, "needs the paste's delete token (x-delete) or the owner token");
+  if (!(await isOwner(req, env)) && !(await holds(req, meta))) return fail(403, "needs the paste's delete token (x-delete) or the owner token");
   await purge(env, id, meta);
   return json({ ok: true, deleted: id });
 }
@@ -778,11 +803,14 @@ function scanSecrets(body: string): string[] {
 function isEnvelope(body: string): boolean {
   try {
     const e = JSON.parse(body);
+    const size = (s: unknown) =>
+      typeof s === "string" && s.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(s) ? (s.length / 4) * 3 - (s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0) : -1;
     return (
       e?.v === 1 &&
-      typeof e.salt === "string" &&
-      typeof e.iv === "string" &&
-      typeof e.ct === "string" &&
+      e.kdf === "pbkdf2-sha256" &&
+      size(e.salt) === 16 &&
+      size(e.iv) === 12 &&
+      size(e.ct) >= 16 &&
       Number.isInteger(e.iter) &&
       e.iter >= 100_000 &&
       e.iter <= 5_000_000
@@ -1059,7 +1087,7 @@ function viewer(
   ext: string | undefined,
   meta: Meta,
   body: string,
-  extra: { files?: FileEntry[]; file?: string; diff?: string },
+  extra: { files?: FileEntry[]; file?: string; diff?: string; etag?: string },
 ): Response {
   const hint = ext?.toLowerCase();
   if (!meta.lang && hint && Object.hasOwn(EXT_LANG, hint)) meta = { ...meta, lang: EXT_LANG[hint] };
@@ -1069,18 +1097,20 @@ function viewer(
   const hl = inline && !enc ? (ansi ? null : hlModules(meta.lang || "", body)) : undefined;
   const md = meta.lang === "markdown" && !extra.diff ? cookie(req, "md") !== "0" : undefined;
   const heading = meta.t || meta.name || "";
+  const text = enc || !inline ? undefined : stripAnsi(body);
   const { cls, html } = viewBody({
     id,
     ext: ext ?? "",
     host: url.host,
     wrap: cookie(req, "wrap") === "1",
     meta,
-    text: enc || !inline ? undefined : stripAnsi(body),
+    text,
     ansi: ansi ? body : undefined,
     enc: enc && inline ? body : undefined,
     files: extra.files,
     file: extra.file,
     diff: extra.diff,
+    etag: text === body ? extra.etag : undefined,
     hl,
     md,
   });
@@ -1162,6 +1192,11 @@ async function isOwner(req: Request, env: Env): Promise<boolean> {
   if (!env.BIN_TOKEN) return false;
   const given = req.headers.get("authorization")?.match(/^Bearer (.+)$/i)?.[1];
   return same(given, env.BIN_TOKEN);
+}
+
+async function holds(req: Request, meta: Meta): Promise<boolean> {
+  const given = req.headers.get("x-delete");
+  return Boolean(given && meta.del) && (await same(await sha256(given!), meta.del));
 }
 
 
