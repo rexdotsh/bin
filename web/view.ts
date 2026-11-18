@@ -1,6 +1,6 @@
-import { asset, assets, gutter, hlModules, lineCount } from "../src/page";
+import { asset, assets, edited, fmtSize, gutter, hlModules, LINE_PX, lineCount } from "../src/page";
 import { highlight } from "./hl";
-import { decrypt } from "./crypto";
+import { decrypt, encrypt } from "./crypto";
 import { ANSI_RE, dropStray, SGR_RE, stripAnsi, toLines, visible } from "../src/text";
 import { toggleTheme } from "./theme";
 import { setCookie, store, stored, toast } from "./ui";
@@ -18,10 +18,15 @@ type Data = {
   hl?: string[] | null;
   raw: string | null;
   dl: string | null;
+  etag?: string;
 };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const data = JSON.parse($("data").textContent!) as Data;
+if (history.state?.etag && history.state.etag !== data.etag) {
+  history.replaceState({ ...history.state, etag: null }, "");
+  location.reload();
+}
 const pre = $<HTMLPreElement>("text");
 const BLOCK = 256;
 const CV_MIN = 1000;
@@ -259,10 +264,8 @@ async function fill() {
       t = performance.now();
     }
   }
-  if (lazy) {
-    pre.style.setProperty("--cw", `${widest}ch`);
-    pre.classList.add("cv");
-  }
+  if (lazy) pre.style.setProperty("--cw", `${widest}ch`);
+  pre.classList.toggle("cv", lazy);
   io?.disconnect();
   pre.innerHTML = out.join("");
   painted = [];
@@ -282,6 +285,7 @@ async function fill() {
 }
 
 async function render(raw: string) {
+  current = raw;
   ({ raw: lines, plain, eol } = toLines(raw));
   ansi = raw.includes("\x1b");
   count = lines.length;
@@ -448,9 +452,12 @@ $("copy").addEventListener("click", copy);
 
 const delKey = `bin:del:${data.id}`;
 const delToken = stored("localStorage", delKey);
+const canEdit = Boolean(delToken && !data.diff && data.etag);
 if (delToken && !data.diff) {
   const del = $<HTMLButtonElement>("del");
-  del.hidden = false;
+  $("own").hidden = false;
+  $("edit").hidden = !canEdit;
+  $("edit").addEventListener("click", edit);
   del.addEventListener("click", async () => {
     if (!confirm("Delete this paste for everyone?")) return;
     const res = await fetch(`/${data.id}`, { method: "DELETE", headers: { "x-delete": delToken } });
@@ -459,6 +466,141 @@ if (delToken && !data.diff) {
       location.href = "/";
     } else toast("couldn't delete");
   });
+}
+
+// ---------------------------------------------------------------- edit
+
+type Saved = { ok?: boolean; error?: string; etag?: string; lines?: number; bytes: number; warnings?: string[] };
+
+let current = "";
+let password = "";
+let ta: HTMLTextAreaElement | null = null;
+let saving = false;
+let was = false;
+let stale = false;
+const sized = CSS.supports("field-sizing", "content");
+const say = (s: string) => ($("est").textContent = s);
+const unmount = () => {
+  for (const el of document.querySelectorAll(".md")) el.remove();
+  md = null;
+};
+
+function edit() {
+  if (!loaded() || ta) return;
+  closeBox();
+  const at = fmt() ? mod?.top() : null;
+  was = fmt();
+  stale = false;
+  ta = document.createElement("textarea");
+  ta.className = "code";
+  ta.spellcheck = false;
+  ta.autocapitalize = "off";
+  ta.ariaLabel = "Edit";
+  ta.value = current;
+  ta.style.paddingLeft = getComputedStyle(pre).paddingLeft;
+  ta.addEventListener("input", fit);
+  pre.after(ta);
+  fit();
+  document.body.classList.add("editing");
+  document.body.classList.remove("fmt");
+  if (!document.getElementById("ebar")) {
+    const mod = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl+";
+    document.body.insertAdjacentHTML("beforeend", `<div id="ebar" class="find"><span id="est"></span><button id="edel" class="ib" title="Delete">${$("del").innerHTML}</button><button id="es" class="btn">Save <kbd>${mod}S</kbd></button><button id="ex" class="ib" title="Cancel (Esc)">${$("qx").innerHTML}</button></div>`);
+    $("es").addEventListener("click", save);
+    $("ex").addEventListener("click", cancel);
+    $("edel").addEventListener("click", () => $("del").click());
+  }
+  $("ebar").hidden = false;
+  say("");
+  const top = ta.getBoundingClientRect().top;
+  if (at && scrollY > 0) scrollTo(0, top + scrollY + (at - 1) * LINE_PX);
+  let i = 0;
+  for (let n = Math.floor(at ?? 1 - Math.min(0, top) / LINE_PX), j = 0; n > 1 && (j = current.indexOf("\n", i)) >= 0; n--) i = j + 1;
+  ta.setSelectionRange(i, i);
+  ta.focus({ preventScroll: true });
+}
+
+function fit() {
+  const v = ta!.value;
+  if (!sized) {
+    let n = 1;
+    for (let i = v.indexOf("\n"); i >= 0; i = v.indexOf("\n", i + 1)) n++;
+    ta!.rows = n;
+  }
+  ta!.style.marginBottom = v.endsWith("\n") ? `-${LINE_PX}px` : "";
+}
+
+function preview() {
+  const on = !ta!.hidden;
+  stale = true;
+  unmount();
+  source = ta!.value;
+  ta!.hidden = on;
+  document.body.classList.toggle("fmt", on);
+  if (on) formatted();
+}
+
+const cancel = () => ta && !saving && (ta.value === current || confirm("Discard your changes?")) && close();
+
+async function close(text?: string) {
+  if (text !== undefined) {
+    hlRows = null;
+    data.hl = undefined;
+    built = false;
+    await render(text);
+  }
+  const at = 1 - Math.min(0, ta!.getBoundingClientRect().top) / LINE_PX;
+  ta!.remove();
+  ta = null;
+  $("ebar").hidden = true;
+  document.body.classList.remove("editing");
+  if (MD && (stale || text !== undefined)) {
+    unmount();
+    source = current;
+  }
+  if (MD) document.body.classList.toggle("fmt", was);
+  const m = MD && was ? await formatted() : null;
+  const y = scrollY > 0 && m?.y(at);
+  if (y) scrollTo(0, y);
+}
+
+async function save() {
+  if (saving || !ta) return;
+  const text = ta.value;
+  if (text === current) return close();
+  saving = ta.readOnly = true;
+  say(password ? "encrypting…" : "saving…");
+  const r: Saved = await fetch(data.raw!.slice(4), {
+    method: "PUT",
+    headers: { "x-delete": delToken!, "if-match": data.etag!, accept: "application/json", "content-type": "text/plain; charset=utf-8" },
+    body: password ? await encrypt(text, password) : text,
+  }).then(
+    (res) => res.json().catch(() => ({ error: `couldn't save (HTTP ${res.status})` })),
+    () => ({ error: "couldn't reach the server" }),
+  );
+  saving = ta.readOnly = false;
+  if (!r.ok) return say(r.error ?? "couldn't save");
+  data.etag = r.etag;
+  history.replaceState({ ...history.state, etag: r.etag }, "");
+  fetch(data.raw!, { cache: "reload" }).catch(() => {});
+  const n = r.lines ?? toLines(text).plain.length;
+  pre.style.setProperty("--gw", gutter(n));
+  pre.style.minHeight = "";
+  const meta = document.querySelector(".meta")!;
+  for (const el of meta.querySelectorAll(".ln")) el.outerHTML = lineCount(n);
+  meta.querySelector(".ed")?.remove();
+  const sz = meta.querySelector(".sz")!;
+  sz.textContent = fmtSize(r.bytes);
+  sz.insertAdjacentHTML("afterend", edited(Date.now() / 1000));
+  await close(text);
+  const warn = r.warnings?.[0];
+  toast(warn ? `saved, but ${warn}` : "saved", warn ? 4000 : 1400);
+}
+
+addEventListener("beforeunload", (e) => ta && ta.value !== current && e.preventDefault());
+if (canEdit) {
+  const fork = document.querySelector<HTMLElement>('.foot [data-k="e"]')!;
+  fork.dataset.k = fork.firstElementChild!.textContent = "E";
 }
 
 const findBox = $<HTMLDivElement>("find");
@@ -529,7 +671,16 @@ q.addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (ta) {
+    if (mod && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      save();
+    } else if (e.key === "Escape" && !e.isComposing) cancel();
+    else if (MD && e.key === "m" && e.target !== ta && !mod && !e.altKey) preview();
+    return;
+  }
+  if (mod || e.altKey) return;
   if ((e.target as HTMLElement).closest("input, textarea, select")) return;
   const go = (href: string | null) => href && (location.href = href);
   const actions: Record<string, () => unknown> = {
@@ -540,7 +691,8 @@ document.addEventListener("keydown", (e) => {
     t: toggleTheme,
     "/": () => openBox("find"),
     g: () => openBox("line"),
-    e: () => {
+    e: () => (canEdit ? edit() : actions.E()),
+    E: () => {
       if (!loaded()) return;
       if (store("sessionStorage", "bin:draft", JSON.stringify({ text: textOf(1, count), name: data.name, lang: data.lang }))) location.href = "/";
       else toast("couldn't open this in the editor");
@@ -561,7 +713,7 @@ document.querySelector(".foot")!.addEventListener("click", (e) => {
   if (key) document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
 });
 $("qx").addEventListener("click", closeBox);
-if (MD) $("mdv").addEventListener("click", () => show(!fmt(), true));
+if (MD) $("mdv").addEventListener("click", () => (ta ? preview() : show(!fmt(), true)));
 
 // ---------------------------------------------------------------- start
 
@@ -591,6 +743,7 @@ if (form) {
       return pw.select();
     }
     const n = toLines(text).plain.length;
+    password = pw.value;
     form.remove();
     document.querySelector(".meta")!.insertAdjacentHTML("beforeend", lineCount(n));
     pre.style.setProperty("--gw", gutter(n));

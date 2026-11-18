@@ -80,7 +80,7 @@ export const LOCK_ICON = svg('<rect x="5" y="11" width="14" height="9" rx="2"/><
 function icons(raw: string | null, dl: string | null, md?: boolean): string {
   return [
     md === undefined ? "" : `<button id="mdv" class="ib" title="${md ? "Source" : "Formatted"} (m)">${svg('<path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/>')}</button>`,
-    `<button id="del" class="ib" title="Delete" hidden>${svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>')}</button>`,
+    `<span id="own" hidden><button id="edit" class="ib" title="Edit (e)">${svg('<path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4"/>')}</button><button id="del" class="ib" title="Delete">${svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>')}</button></span>`,
     `<button id="copy" class="ib" title="Copy (y)">${svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>')}</button>`,
     raw ? `<a id="raw" class="ib" href="${raw}" title="Raw (r)">${svg('<path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>')}</a>` : "",
     dl ? `<a id="dl" class="ib" href="${dl}" title="Download (d)">${svg('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>')}</a>` : "",

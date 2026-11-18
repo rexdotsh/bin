@@ -14,6 +14,7 @@ type Receipt = {
   bytes?: number;
   lang?: string | null;
   expires?: string | null;
+  etag?: string;
 };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -192,6 +193,7 @@ async function show(r: Receipt, text: string, enc: boolean, copied: Promise<unkn
     text: stripAnsi(text),
     ansi: text.includes("\x1b") ? text : undefined,
     md: md ? cookie("md") !== "0" : undefined,
+    etag: r.etag,
   });
   listening.abort();
   t.remove();
